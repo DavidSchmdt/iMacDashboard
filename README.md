@@ -18,9 +18,15 @@ Im Terminal (als normaler Benutzer, nicht root):
 curl -fsSL https://raw.githubusercontent.com/DavidSchmdt/iMacDashboard/main/install.sh | bash
 ```
 
-Beim ersten Mal fragt der Installer:
-- **Setup-Code:** einen privat vorbereiteten Code einfügen (siehe unten). Dann ist alles sofort fertig.
-- **oder Fragen:** Ort fürs Wetter, Bahnhof (optional nur bestimmte Linien), optional die iCal-Adresse des Müllkalenders.
+Beim ersten Mal fragt der Installer im Terminal (kurze Antworten, meist nur eine Nummer):
+1. **Ort** fürs Wetter – Vorschlag anhand der Internetadresse, sonst Ortsnamen tippen.
+2. **Bahnhof** – Liste der Bahnhöfe im Umkreis von 6 km (OpenStreetMap), Nummer wählen; optional Linien
+   (`S1 S2`) und Richtungen (Stichwörter der Ziele).
+3. **Müllabfuhr** – Website der Abfallwirtschaft tippen (z. B. vom Abfallkalender-Flyer). Der Installer findet das
+   Abfuhrtermine-Portal oder den iCal-Link selbst, zeigt Gemeinden und Straßen zur Auswahl (Anfang tippen),
+   fragt die Hausnummer und welche Tonnen angezeigt werden, und prüft die Adresse gleich.
+
+Alternativ einen privat vorbereiteten **Setup-Code** einfügen (siehe unten).
 
 Das Skript
 - installiert nach `~/imac-dashboard/` (Programm in `app/`, `cache/`, `logs/`),
@@ -50,7 +56,7 @@ Nur Abweichungen eintragen; Standardwerte stehen in `server.py` (`DEFAULTS`).
 | `location` | `name`, `lat`, `lon` fürs Wetter |
 | `trains` | `station_name`, `opendata_id` (transport.opendata.ch) und/oder `iris_eva` (DB IRIS), `lines`, `groups` (Richtungen per Regex auf das Ziel), `rename` (Ziele kürzen) |
 | `waste` | `provider: "ics"` mit `ics_url`, oder `provider: "athos"` (Abfuhrtermine-Portal mit WasteManagementServlet) mit `portal_url`, `ort`, `strasse`, `hausnummer`, `containers`; `types` legt fest, welche Abfuhren gezeigt werden |
-| `night` | `from`, `to`, `dim` (Abdunkelung), `mode`: `"dim"` oder `"off"` (Bildschirm nachts per DPMS aus) |
+| `night` | `from`, `to` (Standard 22:30–6:00), `mode`: `"off"` (Standard: Bildschirm nachts per DPMS aus, Mausbewegung weckt ihn) oder `"dim"` (nur abdunkeln, Stärke `dim`) |
 | `images` | `"reddit"` (Katzen-Memes, bei Mangel aufgefüllt mit TheCatAPI/cataas.com) oder `"cats"` (nur Katzenbild-Dienste) |
 | `reddit` | optional `client_id`/`client_secret` (App-Typ „script“): verlässlicher NSFW-/Spoiler-/Flair-Filter |
 

@@ -84,8 +84,8 @@ DEFAULTS = {
     },
     # "reddit" = Katzen-Memes von Reddit (Ersatz: Katzenbild-Dienste), "cats" = nur Katzenbild-Dienste
     "images": "reddit",
-    # mode "dim": Seite abdunkeln; "off": Bildschirm nachts per DPMS ganz aus (spart Strom)
-    "night": {"from": "22:30", "to": "06:00", "dim": 0.7, "mode": "dim"},
+    # mode "off": Bildschirm nachts per DPMS ganz aus (spart Strom); "dim": nur Seite abdunkeln
+    "night": {"from": "22:30", "to": "06:00", "dim": 0.7, "mode": "off"},
     "update_check_hours": 6,
 }
 
@@ -500,12 +500,33 @@ class AthosPortal(object):
                           headers={"Content-Type": "multipart/form-data; boundary=" + b})
         return raw.decode("utf-8", "replace")
 
+    # Einzelschritte (auch für setup.py: Orte/Straßen/Tonnen zur Auswahl anzeigen)
+    def open(self):
+        raw, _ = http_get(self.url + "?SubmitAction=wasteDisposalServices&InFrameMode=TRUE", opener=self.op, timeout=60)
+        self.page = raw.decode("utf-8", "replace")
+        return self
+
+    def options(self, name):
+        part = self.page.split('NAME="%s"' % name)
+        if len(part) < 2:
+            return []
+        vals = re.findall(r'<OPTION VALUE="([^"]*)"', part[1].split("</SELECT>")[0])
+        return [html.unescape(v) for v in vals if v]  # \xa0 bleibt: das Portal erwartet den Wert genau so
+
+    def containers(self):
+        return [(int(n), re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", label))).strip())
+                for n, label in re.findall(r'FOR="ContainerGewaehlt_(\d+)">(.*?)</LABEL>', self.page, re.S | re.I)]
+
+    def choose_city(self, ort):
+        f = self.hidden(self.page)
+        f.update(SubmitAction="CITYCHANGED", Ort=ort, Strasse="")
+        self.page = self.post(f)
+        return self
+
     def ical(self):
         w = self.w
-        raw, _ = http_get(self.url + "?SubmitAction=wasteDisposalServices&InFrameMode=TRUE", opener=self.op, timeout=60)
-        f = self.hidden(raw.decode("utf-8", "replace"))
-        f.update(SubmitAction="CITYCHANGED", Ort=w["ort"], Strasse="")
-        page = self.post(f)
+        self.open().choose_city(w["ort"])
+        page = self.page
         hn = str(w["hausnummer"])
         for _ in range(2):
             f = self.hidden(page)
@@ -526,6 +547,53 @@ class AthosPortal(object):
         f = self.hidden(page)
         f["SubmitAction"] = "filedownload_ICAL"
         return self.post(f)
+
+
+def find_waste_source(text):
+    """Aus einer getippten Adresse (Domain der Abfallwirtschaft, Portal- oder iCal-Link) die Quelle finden.
+    Liefert ("ics", url), ("athos", servlet_url) oder (None, None)."""
+    url = text.strip()
+    if url.startswith("webcal://"):
+        url = "https://" + url[9:]
+    if not re.match(r"https?://", url):
+        url = "https://" + url
+    if re.search(r"\.ics(\?|$)", url, re.I):
+        return "ics", url
+    m = re.search(r"(https?://[^?#]*?/WasteManagement\w*)(/WasteManagementServlet)?", url)
+    if m:
+        return "athos", m.group(1) + "/WasteManagementServlet"
+
+    def scan(page_url, depth):
+        try:
+            req = urllib.request.Request(page_url, headers={"User-Agent": UA_BROWSER})
+            resp = urllib.request.urlopen(req, timeout=20)
+            final, body = resp.geturl(), resp.read(2000000).decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            final, body = e.geturl(), ""
+        except Exception:
+            return None
+        m = re.search(r"(https?://[^?#\s\"']*?/WasteManagement\w*)(/|$)", final)
+        if m:  # Domain leitet direkt aufs Portal um
+            return "athos", m.group(1) + "/WasteManagementServlet"
+        links = [html.unescape(l).strip() for l in re.findall(r'(?:href|src)\s*=\s*"([^"]+)"', body, re.I)]
+        for l in links:
+            if "WasteManagementServlet" in l or re.search(r"/WasteManagement\w+", l):
+                mm = re.search(r"(https?://[^?#]*?/WasteManagement\w*)", urllib.parse.urljoin(final, l))
+                if mm:
+                    return "athos", mm.group(1) + "/WasteManagementServlet"
+            if re.search(r"\.ics(\?|$)|^webcal:", l, re.I):
+                return "ics", urllib.parse.urljoin(final, l).replace("webcal://", "https://")
+        if depth > 0:
+            host = urllib.parse.urlparse(final).netloc
+            subs = [urllib.parse.urljoin(final, l) for l in links
+                    if re.search(r"kalender|abfuhr|termin", l, re.I) and urllib.parse.urlparse(urllib.parse.urljoin(final, l)).netloc == host]
+            for sub in list(dict.fromkeys(subs))[:6]:
+                hit = scan(sub, depth - 1)
+                if hit:
+                    return hit
+        return None
+
+    return scan(url, 1) or (None, None)
 
 
 def parse_ics(text):

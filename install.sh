@@ -3,7 +3,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/DavidSchmdt/iMacDashboard/main/install.sh | bash
 #
-# Beim ersten Mal fragt der Installer nach einem Setup-Code oder nach Ort/Bahnhof/Müllkalender.
+# Beim ersten Mal fragt der Installer nach Ort, Bahnhof und Müllkalender (oder einem Setup-Code).
 # Diese Angaben landen nur in ~/.config/imac-dashboard/config.json auf diesem Rechner.
 #
 # Optionen (bei "| bash" so übergeben:  ... | bash -s -- --reconfigure):

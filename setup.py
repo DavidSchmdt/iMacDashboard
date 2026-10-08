@@ -3,7 +3,8 @@
 
 Ortsangaben gehören nur in diese Datei, nie ins Repo. Zwei Wege:
   * Setup-Code einfügen (privat erzeugt mit:  python3 setup.py --make-code meine-config.json)
-  * Fragen beantworten: Ort fürs Wetter, Bahnhof, optional iCal-Adresse des Müllkalenders
+  * Fragen beantworten: Ort (Vorschlag per Internetadresse), nächster Bahnhof aus einer Liste,
+    Müllkalender über die Website der Abfallwirtschaft (Gemeinde, Straße, Hausnummer zur Auswahl)
 
   python3 setup.py                 nur wenn noch keine Konfiguration existiert
   python3 setup.py --reconfigure   neu einrichten
@@ -14,6 +15,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.parse
 import urllib.request
 import zlib
@@ -61,74 +63,217 @@ class Tty(object):
         self.out.write(s + "\n")
         self.out.flush()
 
-    def choose(self, items, label):
+    def choose(self, items, label, zero="überspringen"):
         for i, it in enumerate(items, 1):
             self.say("  %d) %s" % (i, label(it)))
         while True:
-            a = self.ask("Nummer (Enter = 1, 0 = überspringen)", "1")
+            a = self.ask("Nummer (Enter = 1, 0 = %s)" % zero, "1")
             if a.isdigit() and 0 <= int(a) <= len(items):
                 return items[int(a) - 1] if int(a) else None
 
 
-def interactive(t):
-    cfg = {}
-    t.say("\nOrt fürs Wetter")
+def pick_filtered(t, items, prompt, show=lambda x: x, default=""):
+    """Auswahl aus einer langen Liste: Anfang tippen, dann Nummer wählen."""
     while True:
-        q = t.ask("Stadt oder Ortsteil (leer = keine Wetter-Kachel)")
+        q = t.ask(prompt, default).lower()
+        hits = [i for i in items if show(i).lower().startswith(q)] or [i for i in items if q in show(i).lower()]
+        if not hits:
+            t.say("  Nichts gefunden.")
+            continue
+        if len(hits) == 1:
+            t.say("  -> " + show(hits[0]))
+            return hits[0]
+        hit = t.choose(hits[:12], show)
+        if hit:
+            return hit
+
+
+def ask_location(t):
+    guess = None
+    try:  # grobe Position über die Internetadresse (kein GPS) – nur als Vorschlag
+        g = get_json("https://ipwho.is/?fields=success,city,latitude,longitude")
+        if g.get("success") and g.get("city"):
+            guess = g
+    except Exception:
+        pass
+    while True:
+        q = t.ask("Ort fürs Wetter (leer = keine Wetter-Kachel)" + ("; Enter = %s (per Internet erkannt)" % guess["city"] if guess else ""),
+                  guess["city"] if guess else "")
         if not q:
-            break
+            return None
         try:
             res = get_json("https://geocoding-api.open-meteo.com/v1/search?" + urllib.parse.urlencode(
                 {"name": q, "count": 6, "language": "de"})).get("results") or []
         except Exception as e:
             t.say("  Suche fehlgeschlagen: %s" % e)
             continue
+        if guess and q == guess["city"]:  # Treffer nahe der erkannten Position nach vorn
+            res.sort(key=lambda r: (r["latitude"] - guess["latitude"]) ** 2 + (r["longitude"] - guess["longitude"]) ** 2)
         if not res:
             t.say("  Nichts gefunden, bitte anders schreiben.")
             continue
         hit = t.choose(res, lambda r: ", ".join(x for x in (r.get("name"), r.get("admin1"), r.get("country")) if x))
         if hit:
-            cfg["location"] = {"name": hit["name"], "lat": round(hit["latitude"], 4), "lon": round(hit["longitude"], 4)}
-            break
+            return {"name": hit["name"], "lat": round(hit["latitude"], 4), "lon": round(hit["longitude"], 4)}
 
-    t.say("\nBahnhof für die Abfahrten")
-    while True:
-        q = t.ask("Bahnhof (leer = keine Abfahrts-Kachel)")
-        if not q:
+
+def iris_eva(name):
+    try:
+        with urllib.request.urlopen(urllib.request.Request(
+                "https://iris.noncd.db.de/iris-tts/timetable/station/" + urllib.parse.quote(name), headers=UA), timeout=20) as r:
+            m = re.search(r'name="([^"]+)" eva="(\d+)"', r.read().decode("utf-8"))
+        return m.group(2) if m else None
+    except Exception:
+        return None
+
+
+def nearby_train_stations(loc):
+    """Bahnhöfe und Haltepunkte im Umkreis von 6 km aus OpenStreetMap (Overpass, ohne Schlüssel)."""
+    import math
+    q = '[out:json][timeout:20];node(around:6000,%f,%f)[railway~"^(station|halt)$"];out;' % (loc["lat"], loc["lon"])
+    elements = None
+    for attempt in range(2):  # Overpass ist manchmal kurz überlastet
+        try:
+            req = urllib.request.Request("https://overpass-api.de/api/interpreter",
+                                         data=urllib.parse.urlencode({"data": q}).encode(), headers=UA)
+            with urllib.request.urlopen(req, timeout=40) as r:
+                elements = json.loads(r.read().decode("utf-8")).get("elements") or []
             break
-        trains = {}
+        except Exception:
+            time.sleep(5)
+    if elements is None:  # Ersatz: Fahrplan-Suche nach Koordinate (findet nur die allernächsten)
+        try:
+            elements = [{"lat": st["coordinate"]["x"], "lon": st["coordinate"]["y"], "tags": {"name": st["name"]}}
+                        for st in get_json("https://transport.opendata.ch/v1/locations?" + urllib.parse.urlencode(
+                            {"x": loc["lat"], "y": loc["lon"], "type": "station"})).get("stations") or []
+                        if st.get("icon") == "train" and (st.get("coordinate") or {}).get("x") is not None]
+        except Exception:
+            return []
+    found = {}
+    for e in elements:
+        name = (e.get("tags") or {}).get("name")
+        if not name:
+            continue
+        dy = (e["lat"] - loc["lat"]) * 111.2
+        dx = (e["lon"] - loc["lon"]) * 111.2 * math.cos(math.radians(loc["lat"]))
+        d = math.hypot(dx, dy) * 1000
+        if name not in found or d < found[name]["distance"]:
+            found[name] = {"name": name, "distance": d}
+    return sorted(found.values(), key=lambda s: s["distance"])[:9]
+
+
+def similar(a, b):
+    import difflib
+    a, b = a.lower(), b.lower()
+    return a == b or a.startswith(b) or b.startswith(a) or difflib.SequenceMatcher(None, a, b).ratio() >= 0.8
+
+
+def resolve_station(name):
+    """Name -> IDs für transport.opendata.ch und DB IRIS (beide optional)."""
+    out = {"station_name": name, "opendata_id": ""}
+    variants = list(dict.fromkeys([name, re.sub(r"\bHauptbahnhof\b", "Hbf", name), re.sub(r"\bBahnhof\b", "Bf", name)]))
+    for v in variants:
         try:
             res = [s for s in get_json("https://transport.opendata.ch/v1/locations?" + urllib.parse.urlencode(
-                {"query": q, "type": "station"})).get("stations") or [] if s.get("id")]
+                {"query": v, "type": "station"})).get("stations") or [] if s.get("id") and s.get("icon") in (None, "train")]
         except Exception:
             res = []
-        hit = t.choose(res[:6], lambda s: s["name"]) if res else None
-        name = hit["name"] if hit else q
-        if hit:
-            trains.update(station_name=hit["name"], opendata_id=hit["id"])
-        try:  # DB IRIS als zweite Quelle (deutsche Bahnhöfe)
-            with urllib.request.urlopen(urllib.request.Request(
-                    "https://iris.noncd.db.de/iris-tts/timetable/station/" + urllib.parse.quote(name), headers=UA), timeout=20) as r:
-                m = re.search(r'name="([^"]+)" eva="(\d+)"', r.read().decode("utf-8"))
-            if m:
-                trains.setdefault("station_name", m.group(1))
-                trains["iris_eva"] = m.group(2)
-        except Exception:
-            pass
-        if not trains:
-            t.say("  Nichts gefunden, bitte anders schreiben.")
-            continue
-        lines = t.ask("Nur bestimmte Linien? z. B. 'S1 S2' (leer = alle)")
-        if lines:
-            trains["lines"] = lines.replace(",", " ").split()
-        cfg["trains"] = trains
-        t.say("  Richtungen gruppieren/Ziele kürzen geht später in der Datei ('groups', 'rename').")
-        break
+        res = [s for s in res if similar(s["name"], v)]  # die Suche ist unscharf: nur passende Namen
+        if res:
+            out.update(station_name=res[0]["name"], opendata_id=res[0]["id"])
+            break
+    eva = None
+    for v in [out["station_name"]] + variants:
+        eva = eva or iris_eva(v)
+    if eva:
+        out["iris_eva"] = eva
+    return out
 
-    t.say("\nMüllkalender (optional)")
-    url = t.ask("iCal-Adresse (.ics) deines Abfallkalenders (leer = keine Müll-Kachel)")
-    if url:
-        cfg["waste"] = {"provider": "ics", "ics_url": url}
+
+def ask_station(t, loc):
+    if loc:
+        t.say("  suche Bahnhöfe in der Nähe …")
+    stations = nearby_train_stations(loc) if loc else []
+    trains = None
+    if stations:
+        t.say("Bahnhöfe in der Nähe:")
+        hit = t.choose(stations, lambda s: "%s (%.1f km)" % (s["name"], s["distance"] / 1000.0), "Namen selbst eingeben")
+        if hit:
+            trains = resolve_station(hit["name"])
+    while not trains or not (trains.get("opendata_id") or trains.get("iris_eva")):
+        if trains:
+            t.say("  Für diesen Bahnhof gibt es keine Live-Daten, bitte anders schreiben.")
+        q = t.ask("Bahnhof (leer = keine Abfahrts-Kachel)")
+        if not q:
+            return None
+        trains = resolve_station(q)
+    t.say("  -> %s" % trains["station_name"])
+    lines = t.ask("Nur bestimmte Linien? z. B. 'S1 S2' (leer = alle)")
+    if lines:
+        trains["lines"] = lines.replace(",", " ").split()
+    words = t.ask("Nach Richtung trennen? Ziele der einen Richtung, z. B. 'Nordstadt Flughafen' (leer = eine Liste)")
+    if words:
+        ws = words.replace(",", " ").split()
+        trains["groups"] = [{"title": "Richtung " + " · ".join(ws), "match": "|".join(re.escape(w.lower()) for w in ws)},
+                            {"title": t.ask("Name der Gegenrichtung", "Gegenrichtung"), "match": "."}]
+    return trains
+
+
+def ask_waste(t, loc):
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import server
+    while True:
+        q = t.ask("Website eurer Abfallwirtschaft oder Link zum Müllkalender (leer = keine Müll-Kachel)")
+        if not q:
+            return None
+        t.say("  suche Abfuhrkalender …")
+        kind, url = server.find_waste_source(q)
+        if kind == "ics":
+            t.say("  iCal-Kalender gefunden.")
+            return {"provider": "ics", "ics_url": url}
+        if kind == "athos":
+            break
+        t.say("  Dort habe ich keinen Abfuhrkalender gefunden. Bitte den Link der Seite mit den Abfuhrterminen eingeben.")
+    t.say("  Abfuhrtermine-Portal gefunden.")
+    p = server.AthosPortal({"portal_url": url}).open()
+    show = lambda x: x.replace("\xa0", " ")
+    towns = p.options("Ort")
+    ort = pick_filtered(t, towns, "Gemeinde (Anfang tippen)", show, loc["name"] if loc else "") \
+        if len(towns) > 1 else (towns[0] if towns else "")
+    p.choose_city(ort)
+    strasse = pick_filtered(t, p.options("Strasse"), "Straße (Anfang tippen)", show)
+    hn = t.ask("Hausnummer")
+    boxes = p.containers()
+    default = [n for n, label in boxes if re.search(r"restm.*(2|wöch)|gelb", label, re.I)] or [n for n, _ in boxes[:1]]
+    t.say("Welche Abfuhren anzeigen?")
+    for n, label in boxes:
+        t.say("  %d) %s" % (n, label))
+    nums = t.ask("Nummern mit Leerzeichen", " ".join(str(n) for n in default))
+    containers = [int(n) for n in re.findall(r"\d+", nums)]
+    t.say("  prüfe Adresse …")
+    w = {"provider": "athos", "portal_url": url, "ort": ort, "strasse": strasse, "hausnummer": hn, "containers": containers}
+    try:
+        n = server.parse_ics(server.AthosPortal(w).ical())
+        t.say("  ok, %d Termine gefunden." % len(n))
+    except Exception as e:
+        t.say("  Achtung, Test fehlgeschlagen (%s) – Einstellung wird trotzdem gespeichert." % e)
+    return w
+
+
+def interactive(t):
+    cfg = {}
+    t.say("\n1/3 Wetter")
+    loc = ask_location(t)
+    if loc:
+        cfg["location"] = loc
+    t.say("\n2/3 Abfahrten")
+    trains = ask_station(t, loc)
+    if trains:
+        cfg["trains"] = trains
+    t.say("\n3/3 Müllabfuhr")
+    waste = ask_waste(t, loc)
+    if waste:
+        cfg["waste"] = waste
     return cfg
 
 
@@ -162,7 +307,7 @@ def main(argv):
         return 0
     t.say("\nEinrichtung Flur-Dashboard. Die Angaben bleiben nur auf diesem Rechner.")
     while True:
-        code = t.ask("Setup-Code einfügen (Enter = stattdessen Fragen beantworten)")
+        code = t.ask("Setup-Code einfügen, falls vorhanden (Enter = Fragen beantworten)")
         if not code:
             cfg = interactive(t)
             break

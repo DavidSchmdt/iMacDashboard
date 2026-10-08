@@ -214,7 +214,7 @@
         var mins = d.cancelled ? "fällt aus" : x.mins <= 0 ? "jetzt" : x.mins + "<span class=\"ap\">′</span>";
         if (!d.cancelled && x.mins > 59) mins = hm(new Date(x.real * 1000));
         return '<div class="' + cls + '"><span class="line' + (lineNames.indexOf(d.line) % 2 ? " alt" : "") + '">' + esc(d.line) + "</span>" +
-          '<span class="to">' + esc(rename[d.to] || d.to) + "</span>" +
+          '<span class="to">' + esc(rename[d.to] || d.to.replace(/\s*\((D|CH|F|A|I)\)$/, "")) + "</span>" +
           '<span class="clk">' + hm(planned) + (late ? '<span class="late">' + late + "</span>" : "") + "</span>" +
           '<span class="mins">' + mins + "</span></div>";
       }).join("");

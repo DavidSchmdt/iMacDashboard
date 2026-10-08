@@ -20,7 +20,7 @@
       { "kind": "gelb", "label": "Gelber Sack", "match": "gelb|wertstoff" }
     ]
   },
-  "night": { "from": "22:30", "to": "06:00", "dim": 0.7, "mode": "dim" },
+  "night": { "from": "22:30", "to": "06:00", "dim": 0.7, "mode": "off" },
   "images": "reddit",
   "reddit": { "client_id": "", "client_secret": "" }
 }
