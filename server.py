@@ -162,6 +162,16 @@ def is_night(n):
     return (m >= a or m < b) if a > b else (a <= m < b)
 
 
+def night_paused(cfg):
+    """Bildschirm nachts aus -> Abrufe pausieren; 10 min vor Ende wieder an, damit morgens alles frisch ist."""
+    n = cfg["night"]
+    if n.get("mode") != "off":
+        return False
+    h, m = n["to"].split(":")
+    early = (int(h) * 60 + int(m) - 10) % 1440
+    return is_night(dict(n, to="%02d:%02d" % (early // 60, early % 60)))
+
+
 def local_tz():
     return datetime.now(timezone.utc).astimezone().tzinfo
 
@@ -222,6 +232,9 @@ class Source(object):
     def loop(self):
         time.sleep(random.uniform(0, 3))
         while True:
+            if night_paused(self.cfg):
+                time.sleep(60)
+                continue
             ok = self.run_once()
             time.sleep(self.interval if ok else self.retry)
 
@@ -641,6 +654,9 @@ class Reddit(Source):
         time.sleep(5)
         every = 20 if self.oauth() else max(30, int(self.cfg["reddit"]["request_every_s"]))
         while True:
+            if night_paused(self.cfg):
+                time.sleep(60)
+                continue
             pool = self.subs()
             # stalest feed first
             pool.sort(key=lambda p: (self.feeds.get(p[0]) or {}).get("at", 0))

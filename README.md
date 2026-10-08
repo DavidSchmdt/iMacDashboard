@@ -71,6 +71,13 @@ Nach einer Änderung den Server neu starten: `pkill -f imac-dashboard/app/server
 - **Ausfälle:** Jede Quelle merkt sich ihren letzten guten Stand auf der Platte. Fällt eine Quelle aus, zeigt die Kachel diesen Stand
   weiter an, und der Hinweis wechselt auf „Stand 12:40 · Quelle gestört“.
 
+### Stromsparen
+
+Die Seite zeichnet nur in einem einzigen Takt alle 10 Sekunden neu: keine CSS-Animationen, keine Übergänge, Uhr ohne
+Sekunden, Bilder werden vor dem Tausch fertig dekodiert. Ist der Bildschirm nachts aus, ruht die Seite, und der Server
+pausiert seine Abrufe bis 10 Minuten vor dem Morgen. Der Kiosk-Browser läuft ohne weiches Scrollen und ohne Hintergrunddienste.
+Wer auf alter Hardware Grafikprobleme hat, kann in `~/imac-dashboard/kiosk.env` z. B. `DASH_BROWSER_FLAGS="--disable-gpu"` setzen.
+
 ### Vor jedem Release
 
 1. Lokal starten (`DASH_HOME=/tmp/flur python3 server.py`) und `http://127.0.0.1:8787` im Browser ansehen.

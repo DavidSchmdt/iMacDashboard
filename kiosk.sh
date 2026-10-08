@@ -9,7 +9,7 @@ PORT="${DASH_PORT:-8787}"
 URL="http://127.0.0.1:$PORT/"
 export DASH_HOME
 mkdir -p "$LOGS"
-[ -f "$DASH_HOME/kiosk.env" ] && . "$DASH_HOME/kiosk.env"   # z.B. DASH_BROWSER=firefox
+[ -f "$DASH_HOME/kiosk.env" ] && . "$DASH_HOME/kiosk.env"   # z.B. DASH_BROWSER=firefox, DASH_BROWSER_FLAGS="--disable-gpu"
 
 exec 9>"$DASH_HOME/.kiosk.lock"
 if command -v flock >/dev/null && ! flock -n 9; then echo "läuft bereits"; exit 0; fi
@@ -74,6 +74,16 @@ user_pref("browser.translations.automaticallyPopup", false);
 user_pref("browser.tabs.warnOnClose", false);
 user_pref("app.update.auto", false);
 user_pref("app.update.enabled", false);
+// Stromsparen: kein weiches Scrollen, keine Oberflächen-Animationen, keine Hintergrunddienste
+user_pref("general.smoothScroll", false);
+user_pref("ui.prefersReducedMotion", 1);
+user_pref("toolkit.cosmeticAnimations.enabled", false);
+user_pref("image.animation_mode", "once");
+user_pref("app.normandy.enabled", false);
+user_pref("toolkit.telemetry.enabled", false);
+user_pref("datareporting.healthreport.uploadEnabled", false);
+user_pref("extensions.pocket.enabled", false);
+user_pref("browser.newtabpage.enabled", false);
 EOF
       "$BROWSER" --kiosk --no-remote --profile "$PROFILE" "$URL" ;;
     *)
@@ -81,8 +91,11 @@ EOF
       sed -i 's/"exited_cleanly":false/"exited_cleanly":true/; s/"exit_type":"[^"]*"/"exit_type":"Normal"/' \
         "$PROFILE/Default/Preferences" 2>/dev/null
       "$BROWSER" --kiosk --noerrdialogs --disable-infobars --disable-session-crashed-bubble --no-first-run \
-        --disable-features=Translate --password-store=basic --check-for-update-interval=31536000 \
-        --overscroll-history-navigation=0 --disable-pinch --user-data-dir="$PROFILE" "$URL" ;;
+        --disable-features=Translate,MediaRouter,OptimizationHints,AutofillServerCommunication \
+        --password-store=basic --check-for-update-interval=31536000 \
+        --disable-smooth-scrolling --force-prefers-reduced-motion --disable-sync --disable-background-networking \
+        --disable-component-update --disable-default-apps --disable-breakpad \
+        --overscroll-history-navigation=0 --disable-pinch ${DASH_BROWSER_FLAGS:-} --user-data-dir="$PROFILE" "$URL" ;;
   esac
 }
 

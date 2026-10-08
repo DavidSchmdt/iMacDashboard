@@ -1,10 +1,14 @@
-/* Flur-Dashboard frontend. Plain ES2017, no build step, no libraries. */
+/* Flur-Dashboard frontend. Plain ES2017, no build step, no libraries.
+   Stromsparen: Es gibt genau einen Takt alle 10 s (an :00/:10/… ausgerichtet). Nur dann wird gezeichnet;
+   keine CSS-Animationen, keine Übergänge. Ist der Bildschirm nachts aus, tut der Takt nichts außer prüfen. */
 (function () {
   "use strict";
 
-  var POLL_MS = 60 * 1000;           // Snapshot vom lokalen Server holen
-  var NEWS_ROTATE_MS = 20 * 1000;
-  var PHOTO_ROTATE_MS = 40 * 1000;
+  var TICK_MS = 10 * 1000;
+  var POLL_TICKS = 6;    // alle 60 s Daten vom lokalen Server
+  var NEWS_TICKS = 2;    // 20 s
+  var TIP_TICKS = 3;     // 30 s
+  var PHOTO_TICKS = 4;   // 40 s
   var STALE_AFTER = { weather: 3600, trains: 300, news: 3600, waste: 3 * 86400, reddit: 3 * 3600 };
 
   var state = { snap: null, version: null, newsPage: 0, photoIdx: -1, photoFront: "a", lastOk: 0 };
@@ -41,19 +45,16 @@
     return h < 24 ? "vor " + h + " Std." : "vor " + Math.round(h / 24) + " T.";
   }
 
-  /* ---------------- Uhr ---------------- */
+  /* ---------------- Uhr (ohne Sekunden, nur bei Minutenwechsel neu gezeichnet) ---------------- */
   var lastMinute = -1;
-  function tickClock() {
+  function drawClock() {
     var d = new Date();
-    if (d.getMinutes() !== lastMinute) {
-      lastMinute = d.getMinutes();
-      $("time").innerHTML = pad(d.getHours()) + '<span class="sep">:</span>' + pad(d.getMinutes());
-      $("date").innerHTML = WD[d.getDay()] + ", " + d.getDate() + ". " + MON[d.getMonth()] +
-        '<span class="kw">KW ' + isoWeek(d) + "</span>";
-      applyNight();
-      renderTrains();
-      renderWaste();
-    }
+    if (d.getMinutes() === lastMinute) return false;
+    lastMinute = d.getMinutes();
+    $("time").innerHTML = pad(d.getHours()) + '<span class="sep">:</span>' + pad(d.getMinutes());
+    $("date").innerHTML = WD[d.getDay()] + ", " + d.getDate() + ". " + MON[d.getMonth()] +
+      '<span class="kw">KW ' + isoWeek(d) + "</span>";
+    return true;
   }
 
   /* ---------------- Status / "Stand" ---------------- */
@@ -178,6 +179,7 @@
   }
 
   /* ---------------- Züge ---------------- */
+  var lastTrainsHtml = "";
   function renderTrains() {
     if (!state.snap) return;
     if (notConfigured("trains", "trains")) return;
@@ -220,7 +222,7 @@
       var none = s.ok && nowS - s.updated < STALE_AFTER.trains ? "Keine Abfahrten in Sicht." : "Keine aktuellen Daten.";
       return '<div class="dir">' + (g.title ? "<h3>" + esc(g.title) + "</h3>" : "") + (rows || '<div class="empty">' + none + "</div>") + "</div>";
     }).join("");
-    body.innerHTML = html;
+    if (html !== lastTrainsHtml) { body.innerHTML = html; lastTrainsHtml = html; }
   }
 
   /* ---------------- Müll ---------------- */
@@ -301,22 +303,24 @@
   }
 
   function swap(body, html, animate, after) {
-    if (!animate) { body.innerHTML = html; if (after) after(); return; }
-    body.classList.add("fade");
-    setTimeout(function () { body.innerHTML = html; if (after) after(); body.classList.remove("fade"); }, 650);
+    body.innerHTML = html;  // bewusst ohne Überblendung: spart Neuzeichnen
+    if (after) after();
   }
 
   /* ---------------- Ladebildschirm-Tipps ---------------- */
   // Kuratierte Liste in tips.json, gemischt ohne Wiederholung, bis alle einmal dran waren.
   // Der Stapel überlebt Neuladen der Seite (localStorage), damit nicht immer dieselben zuerst kommen.
-  var TIP_MS = 20 * 1000;
-  var tips = [], tipStart = 0;
+  var tips = [], tipStep = 0, tipsLoading = false;
+  var TIP_PCT = [8, 57, 99];  // ein Schritt pro Takt; bleibt wie jeder echte Ladebalken bei 99 % hängen
 
   function loadTips() {
+    if (tipsLoading) return;
+    tipsLoading = true;
     fetch("/tips.json", { cache: "no-store" })
       .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
       .then(function (list) { tips = list; nextTip(); })
-      .catch(function () { setTimeout(loadTips, 60000); });
+      .catch(function () { /* nächster Versuch beim nächsten Daten-Takt */ })
+      .then(function () { tipsLoading = false; });
   }
 
   function shuffled(n, avoidFirst) {
@@ -344,25 +348,15 @@
   function nextTip() {
     if (!tips.length) return;
     var tip = takeTip(), de = isGerman(tip);
-    var el = $("tip-text"), bar = $("tip-bar");
-    el.classList.add("fade");
-    setTimeout(function () {
-      el.textContent = tip;
-      $("tip-label").textContent = de ? "Tipp" : "Tip";
-      $("tip-ld").setAttribute("data-word", de ? "Lädt" : "Loading");
-      el.classList.remove("fade");
-      bar.style.transform = "scaleX(0)";
-      tipStart = Date.now();
-    }, 600);
+    $("tip-text").textContent = tip;
+    $("tip-label").textContent = de ? "Tipp" : "Tip";
+    $("tip-ld").textContent = de ? "Lädt …" : "Loading …";
+    tipStep = 0;
+    drawLoading();
   }
 
-  // "Lädt …" mit wanderenden Punkten und einer Prozentzahl, die bei 99 % hängen bleibt
-  var dots = 0;
-  function tickLoading() {
-    var ld = $("tip-ld"), word = ld.getAttribute("data-word") || "Lädt";
-    dots = (dots + 1) % 4;
-    ld.textContent = word + new Array(dots + 1).join(".");
-    var pct = Math.min(99, Math.floor(99 * (tipStart ? (Date.now() - tipStart) / TIP_MS : 0) / 0.85));
+  function drawLoading() {
+    var pct = TIP_PCT[Math.min(tipStep, TIP_PCT.length - 1)];
     $("tip-pct").textContent = pct + " %";
     $("tip-bar").style.transform = "scaleX(" + (pct / 100) + ")";
   }
@@ -381,28 +375,33 @@
     if (!advance && state.photoIdx >= 0) return;
     state.photoIdx = (state.photoIdx + 1) % list.length;
     var item = list[state.photoIdx];
-    var back = state.photoFront === "a" ? $("photo-b") : $("photo-a");
-    var front = state.photoFront === "a" ? $("photo-a") : $("photo-b");
-    back.onload = function () {
-      back.classList.add("on"); front.classList.remove("on");
-      state.photoFront = state.photoFront === "a" ? "b" : "a";
+    // Erst fertig dekodieren, dann in einem Schritt austauschen (kein Ruckeln, kein halbes Bild)
+    var img = new Image();
+    img.alt = "";
+    img.src = "/img/" + item.local;
+    var ready = img.decode ? img.decode() : new Promise(function (ok, bad) { img.onload = ok; img.onerror = bad; });
+    ready.then(function () {
+      var frame = tile.querySelector(".frame");
+      frame.innerHTML = "";
+      frame.appendChild(img);
       tile.querySelector(".caption .title").textContent = item.title || "";
       tile.querySelector(".caption .sub").textContent = item.source || (item.sub ? "r/" + item.sub : "");
-    };
-    back.onerror = function () { setTimeout(function () { renderPhoto(true); }, 1000); };
-    back.src = "/img/" + item.local;
+    }).catch(function () { /* kaputtes Bild: beim nächsten Bild-Takt das nächste */ });
   }
 
   /* ---------------- Nacht ---------------- */
   function minutesOf(s) { var p = s.split(":"); return +p[0] * 60 + +p[1]; }
   function applyNight() {
     var n = state.snap && state.snap.night;
-    if (!n) return;
+    if (!n) return false;
     var d = new Date(), m = d.getHours() * 60 + d.getMinutes(), a = minutesOf(n.from), b = minutesOf(n.to);
     var on = a > b ? (m >= a || m < b) : (m >= a && m < b);
-    document.body.classList.toggle("night", on);
+    if (document.body.classList.contains("night") !== on) document.body.classList.toggle("night", on);
     document.body.style.setProperty("--dim", n.dim);
+    return on;
   }
+  // Bildschirm nachts per DPMS aus: dann ist jedes Zeichnen verschwendet
+  function screenOff() { return applyNight() && state.snap.night.mode === "off"; }
 
   /* ---------------- Daten holen ---------------- */
   function poll() {
@@ -447,14 +446,27 @@
     renderPhoto(first || state.photoIdx < 0);
   }
 
-  tickClock();
-  setInterval(tickClock, 1000);
-  setInterval(renderTrains, 15000);
+  /* ---------------- Der eine Takt ---------------- */
+  var wasOff = false;
+  function tick() {
+    var n = Math.floor(Date.now() / TICK_MS);
+    if (screenOff()) { wasOff = true; return; }
+    var woke = wasOff;
+    wasOff = false;
+    if (n % POLL_TICKS === 0 || woke || !state.snap) poll();
+    if (!tips.length) loadTips();
+    if (drawClock() || woke) renderWaste();
+    renderTrains();  // Countdown; zeichnet nur, wenn sich etwas geändert hat
+    if (n % NEWS_TICKS === 0) renderNews(true);
+    if (n % TIP_TICKS === 0) nextTip(); else { tipStep++; drawLoading(); }
+    if (n % PHOTO_TICKS === 0) renderPhoto(true);
+  }
+  function schedule() {  // an der nächsten vollen 10 s ausrichten, damit die Minute pünktlich umspringt
+    setTimeout(function () { tick(); schedule(); }, TICK_MS - (Date.now() % TICK_MS) + 20);
+  }
+
+  drawClock();
   poll();
-  setInterval(poll, POLL_MS);
-  setInterval(function () { renderNews(true); }, NEWS_ROTATE_MS);
   loadTips();
-  setInterval(nextTip, TIP_MS);
-  setInterval(function () { if (!document.body.classList.contains("night")) tickLoading(); }, 500);
-  setInterval(function () { renderPhoto(true); }, PHOTO_ROTATE_MS);
+  schedule();
 })();
