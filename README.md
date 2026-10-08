@@ -2,7 +2,7 @@
 
 Ruhige Info-Wand für einen alten Rechner im Flur (getestet für Linux Mint XFCE): Uhr, Wetter,
 Abfahrten am nächsten Bahnhof (live mit Verspätungen), nächste Müllabfuhr, Nachrichten DE/EN,
-Reddit-Trends und Katzen-Memes.
+Katzen-Memes und Ladebildschirm-Tipps im Videospiel-Stil.
 
 Eine HTML/CSS/JS-Seite plus ein kleiner Python-3-Server (nur Standardbibliothek, ab 3.6).
 Keine Frameworks, kein Node, keine API-Schlüssel nötig.
@@ -56,7 +56,7 @@ Nur Abweichungen eintragen; Standardwerte stehen in `server.py` (`DEFAULTS`).
 | `location` | `name`, `lat`, `lon` fürs Wetter |
 | `trains` | `station_name`, `opendata_id` (transport.opendata.ch) und/oder `iris_eva` (DB IRIS), `lines`, `groups` (Richtungen per Regex auf das Ziel), `rename` (Ziele kürzen) |
 | `waste` | `provider: "ics"` mit `ics_url`, oder `provider: "athos"` (Abfuhrtermine-Portal mit WasteManagementServlet) mit `portal_url`, `ort`, `strasse`, `hausnummer`, `containers`; `types` legt fest, welche Abfuhren gezeigt werden |
-| `night` | `from`, `to` (Standard 22:30–6:00), `mode`: `"off"` (Standard: Bildschirm nachts per DPMS aus, Mausbewegung weckt ihn) oder `"dim"` (nur abdunkeln, Stärke `dim`) |
+| `night` | `from`, `to` (Standard 22:30–6:00), `mode`: `"off"` (Standard: Bildschirm nachts per DPMS aus; eine Mausbewegung weckt ihn für 5 Minuten) oder `"dim"` (nur abdunkeln, Stärke `dim`) |
 | `images` | `"reddit"` (Katzen-Memes, bei Mangel aufgefüllt mit TheCatAPI/cataas.com) oder `"cats"` (nur Katzenbild-Dienste) |
 | `reddit` | optional `client_id`/`client_secret` (App-Typ „script“): verlässlicher NSFW-/Spoiler-/Flair-Filter |
 
@@ -86,13 +86,16 @@ Optische Fehler bei sonst laufender Seite (z. B. verrutschtes Layout) erkennt de
 | Abfahrten | transport.opendata.ch (mit Prognosen), DB IRIS als Ersatz oder alleinige Quelle | 1 min |
 | Müll | iCal des Abfallkalenders (direkt oder über das Abfuhrtermine-Portal) | 12 h |
 | Nachrichten | tagesschau.de RSS, BBC World RSS | 10 min |
-| Reddit | kuratierte SFW-Subreddits, 1 Abruf alle 75 s im Wechsel | ~20 min je Sub |
-| Katzenbild | Reddit-Katzen-Memes; unter 6 Katzenbildern wird mit TheCatAPI / cataas.com aufgefüllt | 40 s Wechsel |
+| Katzenbild | Reddit-Katzen-Memes aus kuratierten SFW-Subreddits (1 Abruf alle 75 s im Wechsel); unter 6 Katzenbildern wird mit TheCatAPI / cataas.com aufgefüllt | 40 s Wechsel |
+| Tipps | `web/tips.json`: kuratierte Ladebildschirm-Tipps (DE/EN), gemischt ohne Wiederholung | 20 s Wechsel |
 
-**Reddit-Auswahl:** Pro Subreddit wird eine „Hitze“ berechnet, also wie schnell ein Beitrag im Verhältnis zu seinem Alter steigt.
+**Bild-Auswahl:** Pro Subreddit wird eine „Hitze“ berechnet, also wie schnell ein Beitrag im Verhältnis zu seinem Alter steigt.
 Mit Punktzahl ist das Punkte / (Alter + 1,5 h)^1,4. Ohne Punktzahl dient die Position in „hot“ geteilt durch das Alter als Ersatz.
-Danach wird mit dem Median des Subreddits normiert. Höchstens 2 Beiträge kommen aus demselben Sub.
+Danach wird mit dem Median des Subreddits normiert. Höchstens 4 Bilder kommen aus demselben Sub.
 Gefiltert werden over_18, Spoiler, angepinnte Beiträge und Titel/Flair mit NSFW- oder Politik-Stichwörtern.
+
+**Tipps:** Eine Zeile pro Tipp in `web/tips.json`. Keine Namen, keine Orte. Die Kachel zeigt „Tipp“/„Lädt“ bei deutschen und
+„Tip“/„Loading“ bei englischen Tipps. Jeder Tipp kommt einmal dran, bevor der Stapel neu gemischt wird.
 
 ## Fehlersuche per SSH
 

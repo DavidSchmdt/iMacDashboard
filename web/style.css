@@ -136,8 +136,8 @@ body {
 
 /* ---- Nachrichten ---- */
 .news { flex: 1 1 auto; }
-.news .body, .trends .body { transition: opacity 600ms ease; }
-.news .body.fade, .trends .body.fade { opacity: 0; }
+.news .body { transition: opacity 600ms ease; }
+.news .body.fade { opacity: 0; }
 .news .body { display: flex; flex-direction: column; gap: calc(var(--u) * 1.6); }
 .feed { flex: 1 1 0; min-height: 0; overflow: hidden; }
 .feed h3 { font-size: 0.72rem; font-weight: 600; color: var(--chalk-3); margin-bottom: calc(var(--u) * 0.6); display: flex; gap: 0.6em; align-items: center; }
@@ -162,13 +162,33 @@ body {
 .caption .sub { font-size: 0.72rem; color: var(--chalk-3); white-space: nowrap; }
 .photo .empty { position: absolute; top: 45%; width: 100%; text-align: center; }
 
-/* ---- Reddit-Trends ---- */
-.trends { flex: 1 1 38%; }
-.post { display: flex; gap: calc(var(--u) * 1.2); align-items: baseline; padding: calc(var(--u) * 0.7) 0; border-top: 1px solid var(--edge); }
-.post .heat { flex: 0 0 auto; width: 2.4em; height: 0.36em; border-radius: 1em; background: var(--chalk-4); position: relative; top: -0.15em; overflow: hidden; }
-.post .heat i { display: block; height: 100%; background: var(--lamp); border-radius: 1em; }
-.post .t { flex: 1; font-size: 1rem; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.post .r { font-size: 0.7rem; color: var(--chalk-3); white-space: nowrap; }
+/* ---- Ladebildschirm-Tipps ---- */
+.tips { flex: 1 1 38%; justify-content: space-between; }
+.tip { flex: 1; display: flex; flex-direction: column; justify-content: center; min-height: 0; }
+.tip-label {
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.22em; text-transform: uppercase; color: var(--lamp);
+  display: flex; align-items: center; gap: 0.6em;
+}
+.tip-label::before { content: ""; width: 0.55em; height: 0.55em; background: var(--lamp); transform: rotate(45deg); }
+.tip-text {
+  font-size: 1.5rem; font-weight: 500; line-height: 1.3; letter-spacing: -0.01em; margin-top: calc(var(--u) * 1.4);
+  text-wrap: balance; transition: opacity 600ms ease;
+}
+.tip-text.fade { opacity: 0; }
+.loading {
+  display: flex; align-items: center; gap: calc(var(--u) * 1.2);
+  font-size: 0.66rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: var(--chalk-3);
+}
+.loading .ld { min-width: 6.5em; }
+.spin {
+  width: 1.7vh; height: 1.7vh; border-radius: 50%; flex: 0 0 auto;
+  border: 2px solid var(--chalk-4); border-top-color: var(--lamp); animation: spin 1.1s linear infinite;
+}
+.bar { flex: 1; height: 0.5vh; border-radius: 1em; background: var(--chalk-4); overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--lamp); transform-origin: left center; transform: scaleX(0); }
+.pct { min-width: 3em; text-align: right; font-variant-numeric: tabular-nums; }
+@keyframes spin { to { transform: rotate(360deg); } }
+body.night .spin { animation-play-state: paused; }
 
 /* ---- Zustände ---- */
 .offline {
@@ -181,5 +201,6 @@ body.night .night-veil { opacity: var(--dim, 0.7); }
 body.night .frame img { transition: none; }
 
 @media (prefers-reduced-motion: reduce) {
-  .frame img, .news .body, .trends .body { transition: none; }
+  .frame img, .news .body, .tip-text { transition: none; }
+  .spin { animation-duration: 4s; }
 }

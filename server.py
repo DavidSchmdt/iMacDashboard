@@ -65,12 +65,7 @@ DEFAULTS = {
         ],
     },
     "reddit": {
-        # Kuratierter Pool, nur SFW, keine Politik. Gewicht = wie oft/gern gezeigt.
-        "trend_subs": {
-            "todayilearned": 1.0, "mildlyinteresting": 1.0, "Damnthatsinteresting": 0.9,
-            "space": 1.0, "science": 0.8, "UpliftingNews": 1.0, "gaming": 0.8,
-            "movies": 0.8, "books": 0.7,
-        },
+        # Kuratierter Pool für die Bild-Kachel, nur SFW, keine Politik. Gewicht = wie oft/gern gezeigt.
         "image_subs": {
             "catmemes": 2.0, "Catmemes": 2.0, "cats": 1.2, "IllegallySmolCats": 1.2,
             "StartledCats": 1.0, "Catswithjobs": 1.0, "catpics": 1.0,
@@ -609,7 +604,7 @@ def parse_ics(text):
 
 
 # --------------------------------------------------------------------------
-# Reddit: trends + cat/meme images. JSON if allowed, otherwise Atom feed.
+# Reddit: cat/meme images. JSON if allowed, otherwise Atom feed.
 
 
 class Reddit(Source):
@@ -638,12 +633,9 @@ class Reddit(Source):
 
     def subs(self):
         r = self.cfg["reddit"]
-        trend = [(s, w, "trend") for s, w in r["trend_subs"].items() if w > 0]
-        image = [(s, w, "image") for s, w in r["image_subs"].items() if w > 0 and self.cfg["images"] == "reddit"]
-        pool = []
-        for i in range(max(len(trend), len(image))):  # abwechselnd, Bilder zuerst
-            pool += image[i:i + 1] + trend[i:i + 1]
-        return pool
+        if self.cfg["images"] != "reddit":
+            return []
+        return [(s, w, "image") for s, w in r["image_subs"].items() if w > 0]
 
     def loop(self):
         time.sleep(5)
@@ -766,11 +758,9 @@ class Reddit(Source):
 
     def fetch(self):
         r = self.cfg["reddit"]
-        weights = {}
-        weights.update({k.lower(): v for k, v in r["trend_subs"].items()})
-        weights.update({k.lower(): v for k, v in r["image_subs"].items()})
+        weights = {k.lower(): v for k, v in r["image_subs"].items()}
         now = time.time()
-        trends, images = [], []
+        images = []
         for sub, feed in self.feeds.items():
             posts = [p for p in feed.get("posts") or [] if p.get("created") and now - p["created"] < 3 * 86400]
             w = weights.get(sub.lower(), 0)
@@ -786,9 +776,7 @@ class Reddit(Source):
                 vel.append((v, p))
             med = sorted(v for v, _ in vel)[len(vel) // 2] or 1e-9
             for v, p in vel:
-                item = dict(p, heat=round(w * v / med, 3))
-                (images if feed.get("kind") == "image" else trends).append(item)
-        trends = pick_diverse(trends, 12, 2)
+                images.append(dict(p, heat=round(w * v / med, 3)))
         images = pick_diverse([i for i in images if i.get("img")], 24, 4)
         images = self.cache_images(images) if self.cfg["images"] == "reddit" else []
         # Zu wenige Katzenbilder von Reddit (gesperrt, gedrosselt, alles weggefiltert)?
@@ -797,10 +785,10 @@ class Reddit(Source):
         if cats < MIN_CAT_IMAGES:
             extra = self.fallback_cats()
             images = interleave(images, extra if not images else extra[:MIN_CAT_IMAGES - cats])
-        if not trends and not images:
-            raise ValueError("noch keine Reddit-Daten")
+        if not images:
+            raise ValueError("noch keine Bilder")
         mode = "oauth" if self.oauth() else "json" if now > self.json_blocked_until else "rss"
-        return {"trends": trends, "images": images, "_feeds": self.feeds, "mode": mode}
+        return {"images": images, "_feeds": self.feeds, "mode": mode}
 
     def cache_images(self, items):
         out = []
@@ -902,7 +890,7 @@ VERSION = read_version()
 STARTED = time.time()
 PAGE = {"version": None, "at": 0}  # Lebenszeichen der Seite im Browser (für update.sh)
 TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "application/javascript; charset=utf-8",
-         ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp", ".ico": "image/x-icon"}
+         ".svg": "image/svg+xml", ".json": "application/json; charset=utf-8", ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp", ".ico": "image/x-icon"}
 
 
 class Handler(BaseHTTPRequestHandler):

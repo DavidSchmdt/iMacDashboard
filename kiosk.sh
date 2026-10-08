@@ -34,13 +34,13 @@ pkill -f "$APP/server.py" 2>/dev/null
     sleep 21600
   done ) &
 
-# Nachts Bildschirm aus, falls "night": {"mode": "off"} – nur beim Wechsel schalten,
-# damit eine Mausbewegung ihn nachts kurz wecken kann.
+# Nachts Bildschirm aus, falls "night": {"mode": "off"}. Eine Mausbewegung weckt ihn;
+# nach 5 Minuten ohne Bewegung schaltet DPMS ihn wieder ab. Morgens: DPMS ganz aus.
 ( last=""
   while true; do
     want="$(python3 -c "import json,urllib.request as u; d=json.load(u.urlopen('${URL}api/all', timeout=5)); print('off' if d['night'].get('mode') == 'off' and d.get('night_now') else 'on')" 2>/dev/null)"
     if [ -n "$want" ] && [ "$want" != "$last" ]; then
-      if [ "$want" = off ]; then xset +dpms; xset dpms 0 0 0; xset dpms force off
+      if [ "$want" = off ]; then xset +dpms; xset dpms 300 300 300; xset dpms force off
       else xset dpms force on; xset -dpms; xset s reset; fi 2>/dev/null
       last="$want"
     fi

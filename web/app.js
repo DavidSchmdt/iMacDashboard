@@ -4,11 +4,10 @@
 
   var POLL_MS = 60 * 1000;           // Snapshot vom lokalen Server holen
   var NEWS_ROTATE_MS = 20 * 1000;
-  var TRENDS_ROTATE_MS = 25 * 1000;
   var PHOTO_ROTATE_MS = 40 * 1000;
   var STALE_AFTER = { weather: 3600, trains: 300, news: 3600, waste: 3 * 86400, reddit: 3 * 3600 };
 
-  var state = { snap: null, version: null, newsPage: 0, trendsPage: 0, photoIdx: -1, photoFront: "a", lastOk: 0 };
+  var state = { snap: null, version: null, newsPage: 0, photoIdx: -1, photoFront: "a", lastOk: 0 };
   var $ = function (id) { return document.getElementById(id); };
   var WD = ["Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"];
   var WD_SHORT = ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"];
@@ -307,25 +306,65 @@
     setTimeout(function () { body.innerHTML = html; if (after) after(); body.classList.remove("fade"); }, 650);
   }
 
-  /* ---------------- Reddit-Trends ---------------- */
-  var trendsStart = 0, trendsShown = 0;
-  function renderTrends(advance) {
-    var s = src("reddit"), r = data("reddit");
-    stamp("trends", s, "reddit");
-    var body = document.querySelector("#trends .body");
-    var list = (r && r.trends) || [];
-    if (!list.length) {
-      body.innerHTML = '<div class="empty">' + (s && s.error && !s.ok ? "Reddit gerade nicht erreichbar." : "Sammle Trends … (Reddit erlaubt nur einen Abruf pro Minute)") + "</div>";
-      return;
+  /* ---------------- Ladebildschirm-Tipps ---------------- */
+  // Kuratierte Liste in tips.json, gemischt ohne Wiederholung, bis alle einmal dran waren.
+  // Der Stapel überlebt Neuladen der Seite (localStorage), damit nicht immer dieselben zuerst kommen.
+  var TIP_MS = 20 * 1000;
+  var tips = [], tipStart = 0;
+
+  function loadTips() {
+    fetch("/tips.json", { cache: "no-store" })
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function (list) { tips = list; nextTip(); })
+      .catch(function () { setTimeout(loadTips, 60000); });
+  }
+
+  function shuffled(n, avoidFirst) {
+    var a = [];
+    for (var i = 0; i < n; i++) a.push(i);
+    for (var j = n - 1; j > 0; j--) { var k = Math.floor(Math.random() * (j + 1)), t = a[j]; a[j] = a[k]; a[k] = t; }
+    if (n > 1 && a[0] === avoidFirst) { a.push(a.shift()); }
+    return a;
+  }
+
+  function takeTip() {
+    var deck = null;
+    try { deck = JSON.parse(localStorage.getItem("tipDeck")); } catch (e) { /* egal */ }
+    if (!deck || deck.n !== tips.length || !deck.order || deck.i >= deck.order.length) {
+      var last = deck && deck.order ? deck.order[deck.order.length - 1] : -1;
+      deck = { n: tips.length, order: shuffled(tips.length, last), i: 0 };
     }
-    if (advance) { trendsStart += trendsShown; if (trendsStart >= list.length) trendsStart = 0; }
-    var top = list[0].heat || 1;
-    var html = list.slice(trendsStart, trendsStart + 6).map(function (p) {
-      var pct = Math.max(12, Math.min(100, Math.round(100 * Math.sqrt(p.heat / top))));
-      return '<div class="post"><span class="heat"><i style="width:' + pct + '%"></i></span><span class="t">' + esc(p.title) +
-        '</span><span class="r">r/' + esc(p.sub) + "</span></div>";
-    }).join("");
-    swap(body, html, advance, function () { trendsShown = trimToFit(body, ".post"); });
+    var idx = deck.order[deck.i++];
+    try { localStorage.setItem("tipDeck", JSON.stringify(deck)); } catch (e) { /* egal */ }
+    return tips[idx];
+  }
+
+  function isGerman(s) { return /[äöüß„]|\b(der|die|das|und|ist|nicht|du|dich|ein|eine|mit|wer|zu)\b/i.test(s); }
+
+  function nextTip() {
+    if (!tips.length) return;
+    var tip = takeTip(), de = isGerman(tip);
+    var el = $("tip-text"), bar = $("tip-bar");
+    el.classList.add("fade");
+    setTimeout(function () {
+      el.textContent = tip;
+      $("tip-label").textContent = de ? "Tipp" : "Tip";
+      $("tip-ld").setAttribute("data-word", de ? "Lädt" : "Loading");
+      el.classList.remove("fade");
+      bar.style.transform = "scaleX(0)";
+      tipStart = Date.now();
+    }, 600);
+  }
+
+  // "Lädt …" mit wanderenden Punkten und einer Prozentzahl, die bei 99 % hängen bleibt
+  var dots = 0;
+  function tickLoading() {
+    var ld = $("tip-ld"), word = ld.getAttribute("data-word") || "Lädt";
+    dots = (dots + 1) % 4;
+    ld.textContent = word + new Array(dots + 1).join(".");
+    var pct = Math.min(99, Math.floor(99 * (tipStart ? (Date.now() - tipStart) / TIP_MS : 0) / 0.85));
+    $("tip-pct").textContent = pct + " %";
+    $("tip-bar").style.transform = "scaleX(" + (pct / 100) + ")";
   }
 
   /* ---------------- Bild ---------------- */
@@ -405,7 +444,6 @@
     renderWaste();
     renderWeather();
     renderNews(false);
-    renderTrends(false);
     renderPhoto(first || state.photoIdx < 0);
   }
 
@@ -415,6 +453,8 @@
   poll();
   setInterval(poll, POLL_MS);
   setInterval(function () { renderNews(true); }, NEWS_ROTATE_MS);
-  setInterval(function () { renderTrends(true); }, TRENDS_ROTATE_MS);
+  loadTips();
+  setInterval(nextTip, TIP_MS);
+  setInterval(function () { if (!document.body.classList.contains("night")) tickLoading(); }, 500);
   setInterval(function () { renderPhoto(true); }, PHOTO_ROTATE_MS);
 })();
