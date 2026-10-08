@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.DS_Store
+# Lokale Einstellungen mit Ortsangaben gehören nie ins Repo
+config.json
+*.local.json
+private/

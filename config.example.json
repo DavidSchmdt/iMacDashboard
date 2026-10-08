@@ -1,0 +1,26 @@
+{
+  "_hinweis": "Beispiel mit erfundenen Werten. Die echte Datei liegt nur lokal unter ~/.config/imac-dashboard/config.json.",
+  "location": { "name": "Musterstadt", "lat": 50.0, "lon": 10.0 },
+  "trains": {
+    "station_name": "Musterstadt Hbf",
+    "opendata_id": "",
+    "iris_eva": "1234567",
+    "lines": ["S1", "S2"],
+    "groups": [
+      { "title": "Richtung Nord", "match": "nordstadt|oberdorf" },
+      { "title": "Richtung Süd", "match": "." }
+    ],
+    "rename": { "Oberdorf (Musterland)": "Oberdorf" }
+  },
+  "waste": {
+    "provider": "ics",
+    "ics_url": "https://example.org/abfallkalender.ics",
+    "types": [
+      { "kind": "rest", "label": "Restmüll", "match": "rest" },
+      { "kind": "gelb", "label": "Gelber Sack", "match": "gelb|wertstoff" }
+    ]
+  },
+  "night": { "from": "22:30", "to": "06:00", "dim": 0.7, "mode": "dim" },
+  "images": "reddit",
+  "reddit": { "client_id": "", "client_secret": "" }
+}
