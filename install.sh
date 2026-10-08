@@ -70,6 +70,9 @@ cat > "$DASH_HOME/repo.env" <<EOF
 REPO="$REPO"
 BRANCH="$BRANCH"
 EOF
+# Kurzbefehle: ~/imac-dashboard/setup.sh (Einstellungen ändern), diagnose.sh (Fehlerbericht)
+for s in setup.sh diagnose.sh; do printf '#!/bin/sh\nexec "%s" "$@"\n' "$APP/$s" > "$DASH_HOME/$s"; chmod +x "$DASH_HOME/$s"; done
+
 # Lokale Einstellungen (Ort, Bahnhof, Müll) – nur auf diesem Rechner, nie im Repo
 python3 "$APP/setup.py" "${SETUP_ARGS[@]+"${SETUP_ARGS[@]}"}" || die "Einrichtung fehlgeschlagen."
 
@@ -114,7 +117,8 @@ if [ "$AUTOLOGIN" = 1 ]; then
 fi
 
 say "Installiert nach $APP (Version $(cat "$APP/VERSION"))"
-echo "    Einstellungen: ~/.config/imac-dashboard/config.json (nur lokal)"
+echo "    Einstellungen ändern: ~/imac-dashboard/setup.sh"
+echo "    Fehlerbericht:        ~/imac-dashboard/diagnose.sh"
 echo "    Logs:          $DASH_HOME/logs/"
 echo "    Updates:       automatisch alle 6 Stunden von github.com/$REPO"
 

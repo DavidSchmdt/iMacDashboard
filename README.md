@@ -34,7 +34,11 @@ Das Skript
 - schaltet Bildschirmschoner, Abdunkeln und Sperre ab,
 - startet sofort Server und Browser im Kiosk-Modus (Chromium, falls installiert, sonst Firefox).
 
-Neu einrichten: `... | bash -s -- --reconfigure`
+**Später ändern ohne Neuinstallation:** `~/imac-dashboard/setup.sh` – zeigt die aktuellen Einstellungen und fragt,
+was geändert werden soll (Wetter-Ort, Abfahrten/Richtungen, Müllabfuhr, Nacht & Helligkeit).
+
+**Fehlerbericht:** `~/imac-dashboard/diagnose.sh` – Status aller Kacheln, Verbindungstest, Müllkalender-Test und letzte
+Fehler, ohne Zugangsdaten. Die Ausgabe kann man so weiterschicken.
 
 ### Setup-Code (privat)
 
@@ -54,9 +58,10 @@ Nur Abweichungen eintragen; Standardwerte stehen in `server.py` (`DEFAULTS`).
 | Feld | Bedeutung |
 |---|---|
 | `location` | `name`, `lat`, `lon` fürs Wetter |
-| `trains` | `station_name`, `opendata_id` (transport.opendata.ch) und/oder `iris_eva` (DB IRIS), `lines`, `groups` (Richtungen per Regex auf das Ziel), `rename` (Ziele kürzen) |
+| `trains` | `station_name`, `opendata_id` (transport.opendata.ch) und/oder `iris_eva` (DB IRIS), `lines`, `groups`: `"auto"` (Standard: zwei Listen je Fahrtrichtung, aus der Lage des nächsten Halts berechnet), `"none"` (eine Liste) oder eigene Gruppen per Regex auf das Ziel; `rename` (Ziele kürzen) |
 | `waste` | `provider: "ics"` mit `ics_url`, oder `provider: "athos"` (Abfuhrtermine-Portal mit WasteManagementServlet) mit `portal_url`, `ort`, `strasse`, `hausnummer`, `containers`; `types` legt fest, welche Abfuhren gezeigt werden |
-| `night` | `from`, `to` (Standard 22:30–6:00), `mode`: `"off"` (Standard: Bildschirm nachts per DPMS aus; eine Mausbewegung weckt ihn für 5 Minuten) oder `"dim"` (nur abdunkeln, Stärke `dim`) |
+| `night` | `from`, `to` (Standard 22:30–6:00), `mode`: `"off"` (Standard: Bildschirm nachts per DPMS aus; eine Mausbewegung weckt ihn für 5 Minuten) oder `"dim"` (nur abdunkeln); `dim` Stärke der Abdunkelung (0–0.9, Standard 0.35); `dim_before` Minuten vor `from`, in denen leicht abgedunkelt wird (Standard 20) |
+| `display` | `brightness`, `contrast` der ganzen Anzeige tagsüber (1.0 = normal, z. B. 1.15 für ein mattes Display) |
 | `images` | `"reddit"` (Katzen-Memes, bei Mangel aufgefüllt mit TheCatAPI/cataas.com) oder `"cats"` (nur Katzenbild-Dienste) |
 | `reddit` | optional `client_id`/`client_secret` (App-Typ „script“): verlässlicher NSFW-/Spoiler-/Flair-Filter |
 

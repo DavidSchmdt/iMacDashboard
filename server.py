@@ -43,9 +43,11 @@ DEFAULTS = {
         "opendata_id": "",   # transport.opendata.ch (Fahrplan der SBB, mit Prognosen)
         "iris_eva": "",      # DB IRIS (Deutschland); Fallback oder alleinige Quelle
         "lines": [],         # leer = alle Linien
-        # Abfahrten nach Richtung gruppieren: [{"title": "Richtung A", "match": "regex auf Ziel"}, ...]
-        # Ziele, die keine Gruppe trifft, landen in der letzten. Leer = eine Liste.
-        "groups": [],
+        # Abfahrten nach Richtung trennen:
+        #   "auto" = zwei Listen je Fahrtrichtung (aus der Lage des nächsten Halts berechnet)
+        #   "none" = eine gemeinsame Liste
+        #   [{"title": "Richtung A", "match": "regex auf Ziel"}, ...] = eigene Gruppen; Rest landet in der letzten
+        "groups": "auto",
         "rename": {},        # Ziel-Anzeigenamen kürzen: {"Langer Name": "Kurz"}
     },
     "news": [
@@ -62,6 +64,8 @@ DEFAULTS = {
         "types": [
             {"kind": "rest", "label": "Restmüll", "match": "rest"},
             {"kind": "gelb", "label": "Gelber Sack", "match": "gelb|wertstoff|verpackung"},
+            {"kind": "bio", "label": "Biotonne", "match": "bio"},
+            {"kind": "papier", "label": "Papiertonne", "match": "papiertonne|altpapier|blaue tonne"},
         ],
     },
     "reddit": {
@@ -79,8 +83,11 @@ DEFAULTS = {
     },
     # "reddit" = Katzen-Memes von Reddit (Ersatz: Katzenbild-Dienste), "cats" = nur Katzenbild-Dienste
     "images": "reddit",
-    # mode "off": Bildschirm nachts per DPMS ganz aus (spart Strom); "dim": nur Seite abdunkeln
-    "night": {"from": "22:30", "to": "06:00", "dim": 0.7, "mode": "off"},
+    # from/to: Nachtzeit. mode "off": Bildschirm dann per DPMS aus (spart Strom); "dim": nur abdunkeln.
+    # dim: Stärke der Abdunkelung (0 = keine, 1 = schwarz); dim_before: so viele Minuten vor "from" leicht abdunkeln
+    "night": {"from": "22:30", "to": "06:00", "mode": "off", "dim": 0.35, "dim_before": 20},
+    # Tagesbild: Helligkeit/Kontrast der ganzen Seite (1.0 = unverändert, z. B. 1.15 für ein mattes Panel)
+    "display": {"brightness": 1.0, "contrast": 1.0},
     "update_check_hours": 6,
 }
 
@@ -180,6 +187,28 @@ def local_tz():
 # Source framework
 
 
+def friendly_error(e):
+    """Fehler in einem Satz, den man im Flur versteht (die Rohmeldung steht in error/Log)."""
+    import socket
+    import ssl
+    reason = getattr(e, "reason", None)
+    if isinstance(e, urllib.error.HTTPError):
+        return "Server antwortet mit Fehler %d" % e.code
+    if isinstance(e, (socket.timeout, TimeoutError)) or isinstance(reason, socket.timeout) or "timed out" in str(e):
+        return "Server antwortet nicht (Zeitüberschreitung)"
+    if isinstance(e, ssl.SSLError) or isinstance(reason, ssl.SSLError) or "CERTIFICATE" in str(e).upper():
+        return "Zertifikatsproblem (TLS) – Systemzeit und ca-certificates prüfen"
+    if isinstance(reason, socket.gaierror) or "Name or service not known" in str(e) or "name resolution" in str(e):
+        return "Adresse nicht gefunden – Internet/DNS prüfen"
+    if isinstance(e, (ConnectionError, urllib.error.URLError)):
+        return "Keine Verbindung zum Server"
+    if "Adresse vom Portal nicht akzeptiert" in str(e):
+        return "Adresse vom Portal nicht akzeptiert – Straße/Hausnummer prüfen (setup.sh)"
+    if "kein iCal" in str(e) or "Terminliste" in str(e):
+        return "Portal liefert keinen Kalender – Einstellungen prüfen (setup.sh)"
+    return str(e)[:120]
+
+
 class NotConfigured(Exception):
     """Quelle hat keine lokalen Einstellungen – Kachel zeigt 'nicht eingerichtet'."""
 
@@ -210,7 +239,7 @@ class Source(object):
             data = self.fetch()
             now = time.time()
             with self.lock:
-                self.state.update(ok=True, data=data, updated=now, error=None, tried=now)
+                self.state.update(ok=True, data=data, updated=now, error=None, hint=None, tried=now)
             tmp = self.cache_path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump({"data": data, "updated": now}, f, ensure_ascii=False)
@@ -226,15 +255,19 @@ class Source(object):
             if not isinstance(e, (urllib.error.URLError, OSError, ValueError)):
                 traceback.print_exc()
             with self.lock:
-                self.state.update(ok=False, error=msg[:200], tried=time.time())
+                self.state.update(ok=False, error=msg[:200], hint=friendly_error(e), tried=time.time())
             return False
 
     def loop(self):
         time.sleep(random.uniform(0, 3))
         while True:
-            if night_paused(self.cfg):
+            # Nachtpause nur, wenn schon Daten da sind – sonst bliebe eine Kachel bis morgens leer
+            if night_paused(self.cfg) and self.state.get("updated"):
+                with self.lock:
+                    self.state["paused"] = True
                 time.sleep(60)
                 continue
+            self.state["paused"] = False
             ok = self.run_once()
             time.sleep(self.interval if ok else self.retry)
 
@@ -297,6 +330,10 @@ class Trains(Source):
     interval = 60
     retry = 45
 
+    def __init__(self, cfg):
+        Source.__init__(self, cfg)
+        self.next_bearing = {}
+
     def fetch(self):
         t = self.cfg["trains"]
         if not (t.get("opendata_id") or t.get("iris_eva")):
@@ -316,8 +353,15 @@ class Trains(Source):
         if lines:
             deps = [d for d in deps if d["line"].upper().replace(" ", "") in lines]
         deps.sort(key=lambda d: d["planned"])
-        return {"station": t["station_name"], "source": src, "departures": deps[:20],
-                "groups": t["groups"], "rename": t["rename"]}
+        deps = deps[:20]
+        # Richtung der Halte merken (IRIS liefert keine Koordinaten, opendata schon)
+        for d in deps:
+            if d.get("bearing") is not None and d.get("next"):
+                self.next_bearing[d["next"]] = d["bearing"]
+            elif d.get("next") in self.next_bearing:
+                d["bearing"] = self.next_bearing[d["next"]]
+        dirs = assign_directions(deps, t["groups"], t["rename"])
+        return {"station": t["station_name"], "source": src, "departures": deps, "dirs": dirs, "rename": t["rename"]}
 
     def fetch_opendata(self, t):
         url = "https://transport.opendata.ch/v1/stationboard?" + urllib.parse.urlencode(
@@ -334,9 +378,14 @@ class Trains(Source):
             delay = stop.get("delay")
             if prog:
                 delay = int(round((parse_iso(prog) - planned).total_seconds() / 60.0))
+            pl = s.get("passList") or []
+            nxt = pl[1] if len(pl) > 1 else {}
             out.append({
                 "line": "%s%s" % (s.get("category") or "", s.get("number") or ""),
                 "to": s.get("to") or "",
+                "next": ((nxt.get("station") or {}).get("name") or ""),
+                "bearing": bearing((stop.get("station") or {}).get("coordinate"),
+                                   (nxt.get("station") or {}).get("coordinate")),
                 "planned": int(planned.timestamp()),
                 "delay": delay if delay is not None else None,
                 "platform": (stop.get("prognosis") or {}).get("platform") or stop.get("platform"),
@@ -366,7 +415,7 @@ class Trains(Source):
                     continue
                 path = (dp.get("ppth") or "").split("|")
                 stops[s.get("id")] = {
-                    "line": dp.get("l") or "", "to": path[-1] if path else "",
+                    "line": dp.get("l") or "", "to": path[-1] if path else "", "next": path[0] if path else "",
                     "pt": dp.get("pt"), "ct": None, "platform": dp.get("pp"), "cancelled": False,
                 }
         raw, _ = http_get("https://iris.noncd.db.de/iris-tts/timetable/fchg/%s" % eva)
@@ -387,11 +436,68 @@ class Trains(Source):
                 continue
             planned = ts(st["pt"])
             delay = int((ts(st["ct"]) - planned).total_seconds() // 60) if st["ct"] else None
-            out.append({"line": st["line"], "to": st["to"], "planned": int(planned.timestamp()),
+            out.append({"line": st["line"], "to": st["to"], "next": st["next"], "bearing": None,
+                        "planned": int(planned.timestamp()),
                         "delay": delay, "platform": st["platform"], "cancelled": st["cancelled"]})
         if not out:
             raise ValueError("IRIS: keine Abfahrten")
         return out
+
+
+def bearing(a, b):
+    """Kompassrichtung in Grad von Koordinate a nach b ({"x": lat, "y": lon}) oder None."""
+    import math
+    try:
+        lat1, lon1, lat2, lon2 = (math.radians(float(v)) for v in (a["x"], a["y"], b["x"], b["y"]))
+    except (TypeError, KeyError, ValueError):
+        return None
+    y = math.sin(lon2 - lon1) * math.cos(lat2)
+    x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(lon2 - lon1)
+    return round((math.degrees(math.atan2(y, x)) + 360) % 360, 1)
+
+
+def display_name(to, rename):
+    return rename.get(to) or re.sub(r"\s*\((D|CH|F|A|I)\)$", "", to)
+
+
+def assign_directions(deps, groups, rename):
+    """Setzt d["dir"] (Index) und liefert die Gruppentitel.
+    "auto": Halte nach Kompassrichtung des nächsten Halts in zwei Hälften teilen (größte Lücke im Kreis)."""
+    if isinstance(groups, list) and groups:
+        rxs = [re.compile(g.get("match") or ".", re.I) for g in groups]
+        for d in deps:
+            d["dir"] = next((i for i, rx in enumerate(rxs) if rx.search(d["to"])), len(rxs) - 1)
+        return [g.get("title") or "" for g in groups]
+    if groups == "auto":
+        angles = sorted(set(d["bearing"] for d in deps if d.get("bearing") is not None))
+        side = None
+        if len(angles) >= 2:
+            # Die Achse wählen, die die Halte am saubersten in zwei gegenüberliegende Hälften teilt
+            def spread(axis):
+                cost = 0.0
+                for a in angles:
+                    diff = abs((a - axis + 180) % 360 - 180)
+                    cost += min(diff, 180 - diff)
+                return cost
+            axis = min(range(0, 180, 5), key=spread)
+            side = lambda a: 0 if abs((a - axis + 180) % 360 - 180) <= 90 else 1
+        elif len(set(d.get("next") for d in deps if d.get("next"))) == 2:  # ohne Koordinaten nur eindeutige Fälle
+            names = sorted(set(d["next"] for d in deps if d.get("next")))
+            side = lambda n: 0 if n == names[0] else 1
+        if side:
+            for d in deps:
+                key = d.get("bearing") if d.get("bearing") is not None and len(angles) >= 2 else d.get("next")
+                d["dir"] = side(key) if key is not None else 1
+            titles = []
+            for i in (0, 1):
+                ends = [display_name(d["to"], rename) for d in deps if d.get("dir") == i]
+                top = sorted(set(ends), key=lambda e: (-ends.count(e), e))[:2]
+                titles.append("Richtung " + " · ".join(top) if top else "")
+            if all(titles):
+                return titles
+    for d in deps:
+        d["dir"] = 0
+    return [""]
 
 
 # --------------------------------------------------------------------------
@@ -456,7 +562,7 @@ class News(Source):
 class Waste(Source):
     name = "waste"
     interval = 12 * 3600
-    retry = 30 * 60
+    retry = 10 * 60
 
     def fetch(self):
         w = self.cfg["waste"]
@@ -535,11 +641,13 @@ class AthosPortal(object):
         w = self.w
         self.open().choose_city(w["ort"])
         page = self.page
-        hn = str(w["hausnummer"])
+        # "2a" / "2 a" -> Hausnummer 2, Zusatz a
+        m = re.match(r"\s*(\d+)\s*(.*?)\s*$", str(w["hausnummer"]))
+        hn, zusatz = (m.group(1), m.group(2)) if m else (str(w["hausnummer"]).strip(), "")
         for _ in range(2):
             f = self.hidden(page)
             f.update(SubmitAction="forward", Ort=w["ort"], Strasse=w["strasse"], Hausnummer=hn,
-                     Hausnummerzusatz="", BedCheckerDatenschutz="on")
+                     Hausnummerzusatz=zusatz, BedCheckerDatenschutz="on")
             for c in w["containers"]:
                 f["ContainerGewaehlt_%d" % int(c)] = "on"
             page = self.post(f)
@@ -549,7 +657,8 @@ class AthosPortal(object):
             opts = re.findall(r'<OPTION VALUE="([^"]*)"', page.split('NAME="Hausnummernwahl"')[-1].split("</SELECT>")[0])
             if 'NAME="Hausnummernwahl"' not in page or not opts:
                 raise ValueError("Adresse vom Portal nicht akzeptiert")
-            hn = html.unescape(opts[0]).replace("\xa0", " ")
+            hn, zusatz = html.unescape(opts[0]).replace("\xa0", " "), ""
+            log("[waste] Hausnummer %s unbekannt, Portal schlägt %s vor" % (w["hausnummer"], hn))
         else:
             raise ValueError("Terminliste nicht erreicht")
         f = self.hidden(page)
@@ -654,9 +763,11 @@ class Reddit(Source):
         time.sleep(5)
         every = 20 if self.oauth() else max(30, int(self.cfg["reddit"]["request_every_s"]))
         while True:
-            if night_paused(self.cfg):
+            if night_paused(self.cfg) and self.state.get("updated"):
+                self.state["paused"] = True
                 time.sleep(60)
                 continue
+            self.state["paused"] = False
             pool = self.subs()
             # stalest feed first
             pool.sort(key=lambda p: (self.feeds.get(p[0]) or {}).get("at", 0))
@@ -898,10 +1009,61 @@ def prune_images(keep):
 
 
 # --------------------------------------------------------------------------
+# Bildschirm: Abdunkeln des Systems verhindern, nachts per DPMS aus (läuft im Server,
+# damit Änderungen mit dem Auto-Update sofort greifen)
+
+
+class Display(object):
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.status = {"active": False, "last": None, "error": None}
+
+    def run(self, *cmd):
+        import subprocess
+        try:
+            p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10)
+            return p.returncode, p.stdout.decode("utf-8", "replace")
+        except Exception as e:  # Programm fehlt o. Ä.
+            return 127, str(e)
+
+    def setup(self):
+        # XFCE-Energieverwaltung: nie abdunkeln, nie ausschalten (das übernimmt die Nacht-Steuerung)
+        for prop, typ, val in (("dpms-enabled", "bool", "false"), ("blank-on-ac", "int", "0"),
+                               ("dpms-on-ac-sleep", "int", "0"), ("dpms-on-ac-off", "int", "0"),
+                               ("brightness-on-ac", "uint", "9"), ("brightness-inactivity-on-ac", "int", "9")):
+            self.run("xfconf-query", "-c", "xfce4-power-manager", "-p", "/xfce4-power-manager/" + prop,
+                     "-n", "-t", typ, "-s", val)
+        self.run("xset", "s", "off")
+        self.run("xset", "s", "noblank")
+
+    def loop(self):
+        if not os.environ.get("DISPLAY"):
+            self.status["error"] = "kein DISPLAY (Server läuft nicht in der grafischen Sitzung)"
+            return
+        self.status["active"] = True
+        self.setup()
+        last = None
+        while True:
+            n = self.cfg["night"]
+            off = n.get("mode") == "off" and is_night(n)
+            if off != last:
+                if off:
+                    cmds = (("xset", "+dpms"), ("xset", "dpms", "300", "300", "300"), ("xset", "dpms", "force", "off"))
+                else:
+                    cmds = (("xset", "dpms", "force", "on"), ("xset", "-dpms"), ("xset", "s", "reset"))
+                errs = [out.strip() for rc, out in (self.run(*c) for c in cmds) if rc != 0]
+                self.status.update(last="aus" if off else "an", at=time.time(), error="; ".join(errs)[:200] or None)
+                log("[display] Bildschirm %s%s" % ("aus" if off else "an", (" – " + errs[0]) if errs else ""))
+                last = off
+            time.sleep(30)
+
+
+# --------------------------------------------------------------------------
 # HTTP server
 
 SOURCES = []
 CONFIG = {}
+DISPLAY_CTL = Display({})
 VERSION = read_version()
 STARTED = time.time()
 PAGE = {"version": None, "at": 0}  # Lebenszeichen der Seite im Browser (für update.sh)
@@ -927,8 +1089,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if path == "/api/all":
             out = {"version": VERSION, "server_time": time.time(), "started": STARTED,
-                   "night": CONFIG["night"], "night_now": is_night(CONFIG["night"]),
-                   "page": PAGE, "sources": {}}
+                   "night": CONFIG["night"], "night_now": is_night(CONFIG["night"]), "display": CONFIG["display"],
+                   "page": PAGE, "screen": DISPLAY_CTL.status, "sources": {}}
             for s in SOURCES:
                 snap = s.snapshot()
                 if isinstance(snap.get("data"), dict):
@@ -962,6 +1124,112 @@ class ThreadingServer(socketserver.ThreadingMixIn, HTTPServer):
     allow_reuse_address = True
 
 
+def ensure_shortcuts():
+    """~/imac-dashboard/setup.sh und diagnose.sh anlegen (auch für ältere Installationen nach Auto-Update)."""
+    for name in ("setup.sh", "diagnose.sh"):
+        path = os.path.join(HOME_DIR, name)
+        body = '#!/bin/sh\nexec "%s" "$@"\n' % os.path.join(HOME_DIR, "app", name)
+        try:
+            with open(path) as f:
+                if f.read() == body:
+                    continue
+        except OSError:
+            pass
+        try:
+            with open(path, "w") as f:
+                f.write(body)
+            os.chmod(path, 0o755)
+        except OSError as e:
+            log("Verknüpfung %s nicht angelegt: %s" % (path, e))
+
+
+def diagnose():
+    """Kurzbericht zum Weiterschicken: Status, letzte Fehler, Verbindungen. Keine Zugangsdaten."""
+    import platform
+    import socket
+    import ssl
+    out = []
+    p = out.append
+    osname = ""
+    try:
+        with open("/etc/os-release") as f:
+            osname = dict(l.strip().split("=", 1) for l in f if "=" in l).get("PRETTY_NAME", "").strip('"')
+    except OSError:
+        osname = platform.platform()
+    p("Flur-Dashboard Diagnose  %s" % time.strftime("%Y-%m-%d %H:%M:%S %Z"))
+    p("Version %s · Python %s · %s" % (VERSION, platform.python_version(), osname))
+    p("Konfiguration: %s (%s)" % (CONFIG_PATH, "vorhanden" if os.path.exists(CONFIG_PATH) else "FEHLT"))
+    w, t = CONFIG["waste"], CONFIG["trains"]
+    p("  Wetter: %s" % ("eingerichtet" if CONFIG["location"].get("lat") is not None else "nicht eingerichtet"))
+    p("  Abfahrten: %s · Linien %s · Richtungen %s" % (t.get("station_name") or "nicht eingerichtet",
+                                                     " ".join(t.get("lines") or []) or "alle",
+                                                     t["groups"] if isinstance(t["groups"], str) else "eigene"))
+    host = urllib.parse.urlparse(w.get("portal_url") or w.get("ics_url") or "").netloc
+    p("  Müll: %s %s %s %s · Tonnen %s" % (w.get("provider") or "nicht eingerichtet", host, w.get("strasse", ""),
+                                          w.get("hausnummer", ""), w.get("containers")))
+    p("  Nacht: %s–%s Modus %s · Reddit-Zugang: %s" % (CONFIG["night"]["from"], CONFIG["night"]["to"], CONFIG["night"]["mode"],
+                                                      "gesetzt" if CONFIG["reddit"].get("client_id") else "nein"))
+    p("")
+    p("Laufender Server:")
+    try:
+        snap = json.load(urllib.request.urlopen("http://127.0.0.1:%d/api/all" % int(CONFIG["port"]), timeout=5))
+        for name, st in sorted(snap["sources"].items()):
+            age = "%d min alt" % ((time.time() - st["updated"]) / 60) if st.get("updated") else "noch nie geladen"
+            state = ("nicht eingerichtet" if st.get("configured") is False else "Nachtpause" if st.get("paused")
+                     else "ok" if st.get("ok") else "lädt noch" if not st.get("tried") else "FEHLER")
+            p("  %-8s %-18s %-16s %s" % (name, state, age, st.get("hint") or st.get("error") or ""))
+        pg = snap.get("page") or {}
+        p("  Seite im Browser: %s" % ("meldet sich (vor %ds)" % (time.time() - pg["at"]) if pg.get("at") else "keine Meldung"))
+        p("  Bildschirm-Steuerung: %s" % json.dumps(snap.get("screen"), ensure_ascii=False))
+    except Exception as e:
+        p("  nicht erreichbar: %s" % e)
+    p("")
+    p("Verbindungen:")
+    hosts = ["api.open-meteo.com", "transport.opendata.ch", "iris.noncd.db.de", "www.tagesschau.de", "www.reddit.com"]
+    if host:
+        hosts.append(host)
+    for h in hosts:
+        t0 = time.time()
+        try:
+            socket.getaddrinfo(h, 443)
+            ctx = ssl.create_default_context()
+            with socket.create_connection((h, 443), timeout=10) as sock:
+                with ctx.wrap_socket(sock, server_hostname=h):
+                    pass
+            p("  %-40s ok (%.1f s)" % (h, time.time() - t0))
+        except Exception as e:
+            p("  %-40s FEHLER %s – %s" % (h, friendly_error(e), e))
+    p("")
+    p("Müllkalender jetzt abrufen:")
+    if w.get("provider"):
+        ws = Waste(CONFIG)
+        try:
+            data = ws.fetch()
+            nxt = ", ".join("%s %s" % (e["date"], e["label"]) for e in data["events"][:4])
+            p("  ok – %d Termine. Nächste: %s" % (len(data["events"]), nxt or "keine"))
+        except Exception as e:
+            p("  FEHLER %s" % friendly_error(e))
+            p("  " + "".join(traceback.format_exception_only(type(e), e)).strip())
+    else:
+        p("  nicht eingerichtet")
+    p("")
+    log_dir = os.path.join(HOME_DIR, "logs")
+    for name, n in (("server.log", 12), ("update.log", 4)):
+        p("Letzte Meldungen %s:" % name)
+        try:
+            with open(os.path.join(log_dir, name), encoding="utf-8", errors="replace") as f:
+                lines = [l.rstrip() for l in f if re.search(r"Fehler|Error|Traceback|Update|zurück|HTTP", l)]
+            for l in lines[-n:] or ["  (keine)"]:
+                p("  " + l[:160])
+        except OSError:
+            p("  (keine Logdatei)")
+    if os.environ.get("DISPLAY"):
+        p("")
+        rc, q = Display({}).run("xset", "q")
+        p("Bildschirm (xset q): " + " | ".join(l.strip() for l in q.splitlines() if re.search(r"DPMS|Monitor|Standby", l)))
+    print("\n".join(out))
+
+
 def main():
     global CONFIG
     for d in (CACHE_DIR, IMG_DIR):
@@ -970,20 +1238,14 @@ def main():
     CONFIG = load_config()
     for cls in (Weather, Trains, News, Waste, Reddit):
         SOURCES.append(cls(CONFIG))
-    if "--once" in sys.argv:  # Diagnose: alle Quellen einmal abrufen und Status zeigen
-        for s in SOURCES:
-            if isinstance(s, Reddit):
-                for sub, _, kind in s.subs()[:1] + [p for p in s.subs() if p[2] == "image"][:1]:
-                    try:
-                        s.feeds[sub] = {"posts": s.fetch_sub(sub), "at": time.time(), "kind": kind}
-                    except Exception as e:
-                        print("reddit   r/%s: %s" % (sub, e))
-                    time.sleep(65)
-            ok = s.run_once()
-            print("%-8s %s %s" % (s.name, "OK " if ok else "ERR", s.snapshot()["error"] or ""))
+    if "--diagnose" in sys.argv or "--once" in sys.argv:
+        diagnose()
         return
+    ensure_shortcuts()
     for s in SOURCES:
         threading.Thread(target=s.loop, name=s.name, daemon=True).start()
+    DISPLAY_CTL.cfg = CONFIG
+    threading.Thread(target=DISPLAY_CTL.loop, name="display", daemon=True).start()
     port = int(os.environ.get("DASH_PORT", CONFIG["port"]))
     httpd = ThreadingServer(("127.0.0.1", port), Handler)
     log("Flur-Dashboard %s auf http://127.0.0.1:%d" % (VERSION, port))

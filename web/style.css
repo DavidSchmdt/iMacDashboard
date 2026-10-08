@@ -2,17 +2,18 @@
    one lamp-amber accent for things that need you soon. Sized in vh so the
    same page fills a 1680x1050 or 2560x1440 iMac. */
 :root {
-  --night: #0e1012;
-  --slab: #16191c;
-  --slab-up: #1c2024;
-  --edge: rgba(255, 255, 255, 0.06);
-  --chalk: #efebe4;
-  --chalk-2: #bdb7ad;
-  --chalk-3: #847e75;
-  --chalk-4: #514d47;
-  --lamp: #ffb547;
-  --lamp-glow: rgba(255, 181, 71, 0.14);
-  --late: #ff7a59;
+  /* bewusst hell und kontrastreich: alte Panels verschlucken dunkle Grautöne */
+  --night: #16191d;
+  --slab: #23272d;
+  --slab-up: #2b3037;
+  --edge: rgba(255, 255, 255, 0.10);
+  --chalk: #fbf8f2;
+  --chalk-2: #e3ded5;
+  --chalk-3: #b5afa5;
+  --chalk-4: #7c776f;
+  --lamp: #ffbf5e;
+  --lamp-glow: rgba(255, 191, 94, 0.16);
+  --late: #ff8a6b;
   --gelb: #f4cf45;
   --tonne: #8e959c;
   --rain: #7fb3e6;
@@ -62,7 +63,9 @@ body {
 .stamp { font-size: 0.66rem; color: var(--chalk-4); letter-spacing: 0.02em; }
 .stamp.stale { color: var(--late); opacity: 0.8; }
 .body { flex: 1; min-height: 0; position: relative; overflow: hidden; }
-.empty { color: var(--chalk-4); font-size: 0.9rem; }
+.empty { color: var(--chalk-3); font-size: 0.9rem; }
+.empty.problem { color: var(--late); }
+.empty .diag { color: var(--chalk-3); font-size: 0.75rem; }
 
 /* ---- Uhr ---- */
 .clock { flex: 0 0 auto; background: transparent; box-shadow: none; padding: calc(var(--u) * 0.4) calc(var(--u) * 1) calc(var(--u) * 1); }
@@ -191,6 +194,7 @@ body {
   box-shadow: 0 0 0 1px rgba(255, 122, 89, 0.35);
 }
 .night-veil { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: #000; opacity: 0; pointer-events: none; }
-body.night .night-veil { opacity: var(--dim, 0.7); }
+body.dim .night-veil { opacity: var(--dim, 0.35); }   /* kurz vor dem Abschalten bzw. Nacht im Modus "dim" */
+body.dark .night-veil { opacity: 1; }                 /* Bildschirm aus: schwarz, falls das Panel trotzdem leuchtet */
 
 /* Stromsparen: Diese Seite hat absichtlich keine Animationen und keine Übergänge. */

@@ -211,12 +211,54 @@ def ask_station(t, loc):
     lines = t.ask("Nur bestimmte Linien? z. B. 'S1 S2' (leer = alle)")
     if lines:
         trains["lines"] = lines.replace(",", " ").split()
-    words = t.ask("Nach Richtung trennen? Ziele der einen Richtung, z. B. 'Nordstadt Flughafen' (leer = eine Liste)")
-    if words:
-        ws = words.replace(",", " ").split()
-        trains["groups"] = [{"title": "Richtung " + " · ".join(ws), "match": "|".join(re.escape(w.lower()) for w in ws)},
-                            {"title": t.ask("Name der Gegenrichtung", "Gegenrichtung"), "match": "."}]
+    trains["groups"] = ask_groups(t)
     return trains
+
+
+def ask_groups(t):
+    t.say("Abfahrten nach Fahrtrichtung trennen?")
+    t.say("  Enter  = automatisch: zwei Listen, eine je Fahrtrichtung (empfohlen)")
+    t.say("  eine   = alle Abfahrten in einer gemeinsamen Liste")
+    t.say("  Wörter = selbst festlegen: Zielorte der ersten Richtung, z. B. 'Nordstadt Flughafen'")
+    a = t.ask("Auswahl", "automatisch")
+    if a.lower() in ("automatisch", "auto", "a", ""):
+        return "auto"
+    if a.lower() in ("eine", "1", "keine", "nein", "none"):
+        return "none"
+    ws = a.replace(",", " ").split()
+    return [{"title": "Richtung " + " · ".join(ws), "match": "|".join(re.escape(w.lower()) for w in ws)},
+            {"title": t.ask("Überschrift für die Gegenrichtung", "Gegenrichtung"), "match": "."}]
+
+
+def ask_night(t, cur):
+    n = dict({"from": "22:30", "to": "06:00", "mode": "off", "dim": 0.35, "dim_before": 20}, **(cur.get("night") or {}))
+    d = dict({"brightness": 1.0, "contrast": 1.0}, **(cur.get("display") or {}))
+    t.say("Nacht: Bildschirm aus (spart Strom) oder nur dunkler?")
+    t.say("  aus    = Bildschirm aus; Maus/Taste weckt ihn für 5 Minuten")
+    t.say("  dunkel = Bildschirm bleibt an, Seite abgedunkelt")
+    mode = t.ask("Nachtmodus", "aus" if n["mode"] == "off" else "dunkel")
+    n["mode"] = "dim" if mode.lower().startswith("d") else "off"
+    n["from"] = valid_time(t.ask("Nacht beginnt um (HH:MM)", n["from"]), n["from"])
+    n["to"] = valid_time(t.ask("Nacht endet um (HH:MM)", n["to"]), n["to"])
+    n["dim_before"] = as_number(t.ask("So viele Minuten vorher leicht abdunkeln (0 = gar nicht)", str(n["dim_before"])), n["dim_before"])
+    pct = as_number(t.ask("Stärke der Abdunkelung in Prozent (0–90)", str(int(round(n["dim"] * 100)))), n["dim"] * 100)
+    n["dim"] = round(min(90, max(0, pct)) / 100.0, 2)
+    t.say("Tagsüber: Helligkeit der Anzeige in Prozent (100 = normal, z. B. 115 für ein mattes Display)")
+    b = as_number(t.ask("Helligkeit", str(int(round(d["brightness"] * 100)))), d["brightness"] * 100)
+    d["brightness"] = round(min(160, max(60, b)) / 100.0, 2)
+    return n, d
+
+
+def valid_time(s, default):
+    m = re.match(r"^\s*(\d{1,2})[:.](\d{2})\s*$", s)
+    return "%02d:%s" % (int(m.group(1)), m.group(2)) if m and int(m.group(1)) < 24 and int(m.group(2)) < 60 else default
+
+
+def as_number(s, default):
+    try:
+        return float(s.replace(",", ".").replace("%", ""))
+    except ValueError:
+        return default
 
 
 def ask_waste(t, loc):
@@ -242,7 +284,7 @@ def ask_waste(t, loc):
         if len(towns) > 1 else (towns[0] if towns else "")
     p.choose_city(ort)
     strasse = pick_filtered(t, p.options("Strasse"), "Straße (Anfang tippen)", show)
-    hn = t.ask("Hausnummer")
+    hn = t.ask("Hausnummer (z. B. 12 oder 12a)")
     boxes = p.containers()
     default = [n for n, label in boxes if re.search(r"restm.*(2|wöch)|gelb", label, re.I)] or [n for n, _ in boxes[:1]]
     t.say("Welche Abfuhren anzeigen?")
@@ -256,24 +298,28 @@ def ask_waste(t, loc):
         n = server.parse_ics(server.AthosPortal(w).ical())
         t.say("  ok, %d Termine gefunden." % len(n))
     except Exception as e:
-        t.say("  Achtung, Test fehlgeschlagen (%s) – Einstellung wird trotzdem gespeichert." % e)
+        t.say("  Achtung, Test fehlgeschlagen: %s" % server.friendly_error(e))
+        t.say("  Gespeichert wird trotzdem; ändern mit ~/imac-dashboard/setup.sh, Details mit diagnose.sh")
     return w
 
 
 def interactive(t):
     cfg = {}
-    t.say("\n1/3 Wetter")
+    t.say("\n1/4 Wetter")
     loc = ask_location(t)
     if loc:
         cfg["location"] = loc
-    t.say("\n2/3 Abfahrten")
+    t.say("\n2/4 Abfahrten")
     trains = ask_station(t, loc)
     if trains:
         cfg["trains"] = trains
-    t.say("\n3/3 Müllabfuhr")
+    t.say("\n3/4 Müllabfuhr")
     waste = ask_waste(t, loc)
     if waste:
         cfg["waste"] = waste
+    t.say("\n4/4 Nacht & Helligkeit")
+    cfg["night"], cfg["display"] = ask_night(t, cfg)
+    t.say("\nSpäter ändern: ~/imac-dashboard/setup.sh  ·  Fehlersuche: ~/imac-dashboard/diagnose.sh")
     return cfg
 
 
@@ -289,6 +335,59 @@ def write(cfg):
     print("Einstellungen gespeichert: %s" % CONFIG_PATH)
 
 
+def summary(cfg):
+    loc = (cfg.get("location") or {}).get("name") or "–"
+    tr = cfg.get("trains") or {}
+    g = tr.get("groups", "auto")
+    gtxt = {"auto": "automatisch getrennt", "none": "eine Liste"}.get(g, "eigene Richtungen") if isinstance(g, str) else "eigene Richtungen"
+    w = cfg.get("waste") or {}
+    n = cfg.get("night") or {}
+    return ["  1) Wetter-Ort:        %s" % loc,
+            "  2) Abfahrten:        %s%s, %s" % (tr.get("station_name") or "–",
+                                                (" (" + " ".join(tr["lines"]) + ")") if tr.get("lines") else "", gtxt),
+            "  3) Müllabfuhr:       %s" % ((w.get("strasse", "") + " " + str(w.get("hausnummer", ""))).strip() or w.get("provider") or "–"),
+            "  4) Nacht & Helligkeit: %s–%s, %s" % (n.get("from", "22:30"), n.get("to", "06:00"),
+                                                   "dunkel" if n.get("mode") == "dim" else "Bildschirm aus")]
+
+
+def menu(t):
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        return interactive(t)
+    while True:
+        t.say("\nAktuelle Einstellungen:")
+        for line in summary(cfg):
+            t.say(line)
+        t.say("  5) Alles neu einrichten")
+        t.say("  0) Fertig")
+        a = t.ask("Was ändern?", "0")
+        if a == "1":
+            loc = ask_location(t)
+            if loc:
+                cfg["location"] = loc
+        elif a == "2":
+            sub = t.ask("Nur die Richtungen ändern (r) oder Bahnhof und Linien neu wählen (b)?", "r")
+            if sub.lower().startswith("r") and cfg.get("trains"):
+                cfg["trains"]["groups"] = ask_groups(t)
+            else:
+                tr = ask_station(t, cfg.get("location"))
+                if tr:
+                    cfg["trains"] = tr
+        elif a == "3":
+            w = ask_waste(t, cfg.get("location"))
+            if w:
+                cfg["waste"] = w
+        elif a == "4":
+            cfg["night"], cfg["display"] = ask_night(t, cfg)
+        elif a == "5":
+            return interactive(t)
+        elif a == "0":
+            return cfg
+        write(cfg)
+
+
 def main(argv):
     if "--make-code" in argv:
         with open(argv[argv.index("--make-code") + 1], encoding="utf-8") as f:
@@ -297,13 +396,16 @@ def main(argv):
     if "--code" in argv:
         write(read_code(argv[argv.index("--code") + 1]))
         return 0
-    if os.path.exists(CONFIG_PATH) and "--reconfigure" not in argv:
-        print("Einstellungen vorhanden: %s (neu: --reconfigure)" % CONFIG_PATH)
+    if os.path.exists(CONFIG_PATH) and "--reconfigure" not in argv and "--menu" not in argv:
+        print("Einstellungen vorhanden: %s (ändern: ~/imac-dashboard/setup.sh)" % CONFIG_PATH)
         return 0
     try:
         t = Tty()
     except OSError:
         print("Kein Terminal für Fragen – später einrichten mit: python3 %s --reconfigure" % os.path.abspath(__file__))
+        return 0
+    if "--menu" in argv and os.path.exists(CONFIG_PATH):
+        write(menu(t))
         return 0
     t.say("\nEinrichtung Flur-Dashboard. Die Angaben bleiben nur auf diesem Rechner.")
     while True:

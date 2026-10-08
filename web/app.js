@@ -70,6 +70,12 @@
     el.className = stale ? "stamp stale" : "stamp";
   }
   function src(name) { return state.snap && state.snap.sources[name]; }
+  // Lesbarer Fehler statt leerer Kachel
+  function problem(s, fallback) {
+    var why = s && (s.hint || s.error);
+    return '<div class="empty problem">' + esc(why ? why : fallback) +
+      (why ? '<br><span class="diag">Diagnose: ~/imac-dashboard/diagnose.sh</span>' : "") + "</div>";
+  }
   // Ort-Kacheln ohne lokale Konfiguration: Hinweis statt Fehler
   function notConfigured(tileId, name) {
     var s = src(name);
@@ -145,7 +151,7 @@
     var s = src("weather"), w = data("weather");
     stamp("weather", s, "weather");
     var body = document.querySelector("#weather .body");
-    if (!w) { body.innerHTML = '<div class="empty">Keine Wetterdaten.</div>'; return; }
+    if (!w) { body.innerHTML = problem(s, "Wetter wird geladen …"); return; }
     var now = w.now;
     var nowHour = new Date(); nowHour.setMinutes(0, 0, 0);
     var hours = w.hours.filter(function (h) { return new Date(h.time) > nowHour; });
@@ -186,19 +192,18 @@
     var s = src("trains"), t = data("trains");
     stamp("trains", s, "trains");
     var body = document.querySelector("#trains .body");
-    if (!t) { body.innerHTML = '<div class="empty">Keine Abfahrtsdaten.</div>'; return; }
+    if (!t) { body.innerHTML = problem(s, "Abfahrten werden geladen …"); return; }
     document.querySelector("#trains h2").textContent = t.station ? "Abfahrten ab " + t.station : "Abfahrten";
     var nowS = Date.now() / 1000;
     var deps = t.departures.map(function (d) {
       var real = d.planned + (d.delay || 0) * 60;
       return { d: d, real: real, mins: Math.floor((real - nowS) / 60) };
     }).filter(function (x) { return x.real > nowS - 30; });
-    // Richtungen aus der lokalen Konfiguration; was keine Gruppe trifft, kommt in die letzte
-    var cfgGroups = t.groups || [];
-    var groups = cfgGroups.length ? cfgGroups.map(function (g) { return { title: g.title, rx: new RegExp(g.match, "i"), rows: [], max: 3 }; })
-      : [{ title: "", rx: /./, rows: [], max: 6 }];
+    // Richtungen kommen fertig vom Server (automatisch oder aus der Konfiguration)
+    var dirs = t.dirs && t.dirs.length ? t.dirs : [""];
+    var groups = dirs.map(function (title) { return { title: title, rows: [], max: dirs.length > 1 ? 3 : 6 }; });
     deps.forEach(function (x) {
-      var g = groups.filter(function (g) { return g.rx.test(x.d.to); })[0] || groups[groups.length - 1];
+      var g = groups[Math.min(x.d.dir || 0, groups.length - 1)];
       if (g.rows.length < g.max) g.rows.push(x);
     });
     var rename = t.rename || {};
@@ -242,9 +247,15 @@
     var s = src("waste"), w = data("waste");
     stamp("waste", s, "waste");
     var body = document.querySelector("#waste .body");
-    if (!w) { body.innerHTML = '<div class="empty">Kalender nicht erreichbar.</div>'; return; }
+    if (!w) { body.innerHTML = problem(s, "Müllkalender noch nicht geladen."); return; }
     var nowH = new Date().getHours();
-    var rows = (w.types || []).map(function (ty) {
+    // nur Tonnen zeigen, für die der Kalender überhaupt Termine hat
+    var types = (w.types || []).filter(function (ty) { return w.events.some(function (e) { return e.kind === ty.kind; }); });
+    if (!types.length) {
+      body.innerHTML = '<div class="empty">Keine Abfuhrtermine im Kalender – Tonnen-Auswahl prüfen: ~/imac-dashboard/setup.sh</div>';
+      return;
+    }
+    var rows = types.map(function (ty) {
       var kind = ty.kind, icon = BIN_ICONS[kind] || BIN_ICONS.rest, label = esc(ty.label);
       // ab 10 Uhr am Abfuhrtag ist der Termin vorbei
       var next = w.events.filter(function (e) {
@@ -391,17 +402,41 @@
 
   /* ---------------- Nacht ---------------- */
   function minutesOf(s) { var p = s.split(":"); return +p[0] * 60 + +p[1]; }
+  function inWindow(m, a, b) { return a > b ? (m >= a || m < b) : (m >= a && m < b); }
+  var awakeUntil = 0;  // Maus/Taste weckt den Bildschirm nachts für 5 Minuten
+
+  // Tag: hell. Kurz vor der Nacht (dim_before Minuten): leicht abdunkeln. Nacht: Modus "off" -> schwarz und Pause,
+  // Modus "dim" -> abgedunkelt weiterlaufen. Liefert true, wenn gerade nichts gezeichnet werden muss.
   function applyNight() {
     var n = state.snap && state.snap.night;
     if (!n) return false;
     var d = new Date(), m = d.getHours() * 60 + d.getMinutes(), a = minutesOf(n.from), b = minutesOf(n.to);
-    var on = a > b ? (m >= a || m < b) : (m >= a && m < b);
-    if (document.body.classList.contains("night") !== on) document.body.classList.toggle("night", on);
-    document.body.style.setProperty("--dim", n.dim);
-    return on;
+    var night = inWindow(m, a, b);
+    var before = Math.max(0, +n.dim_before || 0);
+    var pre = !night && before > 0 && inWindow(m, (a - before + 1440) % 1440, a);
+    var awake = Date.now() < awakeUntil;
+    var off = night && n.mode === "off" && !awake;
+    var cls = document.body.classList;
+    if (cls.contains("dark") !== off) cls.toggle("dark", off);
+    var dim = !off && (pre || night);
+    if (cls.contains("dim") !== dim) cls.toggle("dim", dim);
+    document.body.style.setProperty("--dim", n.dim == null ? 0.35 : n.dim);
+    var disp = state.snap.display || {};
+    var f = "brightness(" + (+disp.brightness || 1) + ") contrast(" + (+disp.contrast || 1) + ")";
+    var board = document.querySelector(".board");
+    var want = f === "brightness(1) contrast(1)" ? "" : f;
+    if (board.style.filter !== want) board.style.filter = want;
+    return off;
   }
-  // Bildschirm nachts per DPMS aus: dann ist jedes Zeichnen verschwendet
-  function screenOff() { return applyNight() && state.snap.night.mode === "off"; }
+  function screenOff() { return applyNight(); }
+
+  ["mousemove", "mousedown", "keydown", "touchstart"].forEach(function (ev) {
+    window.addEventListener(ev, function () {
+      if (!document.body.classList.contains("dark")) return;
+      awakeUntil = Date.now() + 5 * 60 * 1000;
+      tick();
+    }, { passive: true });
+  });
 
   /* ---------------- Daten holen ---------------- */
   function poll() {
