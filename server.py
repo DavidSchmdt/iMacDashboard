@@ -71,9 +71,8 @@ DEFAULTS = {
     "reddit": {
         # Kuratierter Pool für die Bild-Kachel, nur SFW, keine Politik. Gewicht = wie oft/gern gezeigt.
         "image_subs": {
-            "catmemes": 2.0, "Catmemes": 2.0, "cats": 1.2, "IllegallySmolCats": 1.2,
-            "StartledCats": 1.0, "Catswithjobs": 1.0, "catpics": 1.0,
-            "wholesomememes": 0.8, "aww": 0.6,
+            "catmemes": 1.5, "cats": 1.0, "IllegallySmolCats": 1.2, "catsareliquid": 1.0, "blep": 1.0,
+            "Catloaf": 1.0, "SupermodelCats": 1.0, "StartledCats": 1.0, "Catswithjobs": 1.0, "catpics": 0.8,
         },
         "request_every_s": 75,
         # Optional, für verlässlichen SFW-Filter (over_18/spoiler/flair) und Punktzahlen:
@@ -83,11 +82,13 @@ DEFAULTS = {
     },
     # "reddit" = Katzen-Memes von Reddit (Ersatz: Katzenbild-Dienste), "cats" = nur Katzenbild-Dienste
     "images": "reddit",
+    # Nach "Zum Desktop" automatisch zurück ins Dashboard nach so vielen Minuten Leerlauf (0 = nie)
+    "kiosk": {"return_after_min": 0},
     # from/to: Nachtzeit. mode "off": Bildschirm dann per DPMS aus (spart Strom); "dim": nur abdunkeln.
     # dim: Stärke der Abdunkelung (0 = keine, 1 = schwarz); dim_before: so viele Minuten vor "from" leicht abdunkeln
     "night": {"from": "22:30", "to": "06:00", "mode": "off", "dim": 0.35, "dim_before": 20},
-    # Tagesbild: Helligkeit/Kontrast der ganzen Seite (1.0 = unverändert, z. B. 1.15 für ein mattes Panel)
-    "display": {"brightness": 1.0, "contrast": 1.0},
+    # Tagesbild: helles oder dunkles Thema; Helligkeit/Kontrast der ganzen Seite (1.0 = unverändert)
+    "display": {"theme": "hell", "brightness": 1.0, "contrast": 1.0},  # theme: "hell" oder "dunkel"
     "update_check_hours": 6,
 }
 
@@ -99,7 +100,6 @@ BLOCK_WORDS = re.compile(
     r"war|krieg|shooting|killed|dead|death|died|abortion|immigra\w*|refugee\w*)\b",
     re.I,
 )
-MIN_CAT_IMAGES = 6  # weniger Reddit-Katzen als das -> Katzenbild-Dienste ergänzen
 UA_BROWSER = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 UA_SELF = "imac-flur-dashboard/1.0 (+private hallway display)"
 
@@ -169,14 +169,23 @@ def is_night(n):
     return (m >= a or m < b) if a > b else (a <= m < b)
 
 
+def update_status():
+    try:
+        with open(os.path.join(HOME_DIR, ".update-status"), encoding="utf-8") as f:
+            at, result = f.read().strip().split("\t", 1)
+        return {"at": int(at), "result": result}
+    except (OSError, ValueError):
+        return {"at": None, "result": None}
+
+
 def night_paused(cfg):
     """Bildschirm nachts aus -> Abrufe pausieren; 10 min vor Ende wieder an, damit morgens alles frisch ist."""
     n = cfg["night"]
-    if n.get("mode") != "off":
+    if n.get("mode") != "off" or not is_night(n):
         return False
     h, m = n["to"].split(":")
     early = (int(h) * 60 + int(m) - 10) % 1440
-    return is_night(dict(n, to="%02d:%02d" % (early // 60, early % 60)))
+    return not is_night({"from": "%02d:%02d" % (early // 60, early % 60), "to": n["to"]})
 
 
 def local_tz():
@@ -353,6 +362,8 @@ class Trains(Source):
         if lines:
             deps = [d for d in deps if d["line"].upper().replace(" ", "") in lines]
         deps.sort(key=lambda d: d["planned"])
+        seen = set()  # dieselbe Fahrt steht in den Quelldaten manchmal doppelt
+        deps = [d for d in deps if not ((d["line"], d["to"], d["planned"]) in seen or seen.add((d["line"], d["to"], d["planned"])))]
         deps = deps[:20]
         # Richtung der Halte merken (IRIS liefert keine Koordinaten, opendata schon)
         for d in deps:
@@ -750,7 +761,6 @@ class Reddit(Source):
             self.feeds[sub] = f
         self.json_blocked_until = 0
         self.pause_until = 0
-        self.fallback = (0, [])
         self.token = (None, 0)
 
     def subs(self):
@@ -904,62 +914,95 @@ class Reddit(Source):
             med = sorted(v for v, _ in vel)[len(vel) // 2] or 1e-9
             for v, p in vel:
                 images.append(dict(p, heat=round(w * v / med, 3)))
-        images = pick_diverse([i for i in images if i.get("img")], 24, 4)
-        images = self.cache_images(images) if self.cfg["images"] == "reddit" else []
-        # Zu wenige Katzenbilder von Reddit (gesperrt, gedrosselt, alles weggefiltert)?
-        # Dann mit Katzenbild-Diensten auffüllen und untermischen.
-        cats = sum(1 for i in images if "cat" in i["sub"].lower())
-        if cats < MIN_CAT_IMAGES:
-            extra = self.fallback_cats()
-            images = interleave(images, extra if not images else extra[:MIN_CAT_IMAGES - cats])
-        if not images:
-            raise ValueError("noch keine Bilder")
+        # Nur Kandidaten merken; geladen wird erst, wenn ein Bild wirklich gezeigt wird (ImagePicker)
+        cands = pick_diverse([i for i in images if i.get("img")], 80, 10) if self.cfg["images"] == "reddit" else []
         mode = "oauth" if self.oauth() else "json" if now > self.json_blocked_until else "rss"
-        return {"images": images, "_feeds": self.feeds, "mode": mode}
+        return {"count": len(cands), "_candidates": cands, "_feeds": self.feeds, "mode": mode}
 
-    def cache_images(self, items):
-        out = []
-        for it in items:
-            local = fetch_image(it["img"])
-            if local:
-                out.append(dict(it, local=local))
-        prune_images(keep=60)
-        return out
 
-    def fallback_cats(self):
-        """Katzen von TheCatAPI und cataas.com (beide ohne Schlüssel), 30 min zwischengespeichert."""
-        if time.time() - self.fallback[0] < 30 * 60 and self.fallback[1]:
-            return self.fallback[1]
-        cands = []
+class ImagePicker(object):
+    """Wählt das nächste Bild für die Katzen-Kachel (alle 5 min).
+    Mischung: jedes dritte Bild von TheCatAPI/cataas, sonst Reddit (Memes und normale Katzen);
+    fällt Reddit aus, kommen nur noch die Katzen-Dienste. Kein Bild wiederholt sich innerhalb von 3 Tagen."""
+    TTL = 3 * 86400
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.path = os.path.join(CACHE_DIR, "seen-images.json")
+        self.queue = []   # (key, url, source) von den Katzen-Diensten
+        self.count = 0
+        try:
+            with open(self.path) as f:
+                self.seen = json.load(f)
+        except (OSError, ValueError):
+            self.seen = {}
+
+    def mark(self, key):
+        now = time.time()
+        self.seen[key] = now
+        self.seen = {k: t for k, t in self.seen.items() if now - t < self.TTL}
+        try:
+            with open(self.path + ".tmp", "w") as f:
+                json.dump(self.seen, f)
+            os.replace(self.path + ".tmp", self.path)
+        except OSError:
+            pass
+
+    def refill(self):
         try:
             raw, _ = http_get("https://api.thecatapi.com/v1/images/search?limit=10&mime_types=jpg,png")
-            cands += [(c["url"], "TheCatAPI") for c in json.loads(raw.decode("utf-8")) if c.get("url")]
+            self.queue += [("tca:" + c["id"], c["url"], "TheCatAPI") for c in json.loads(raw.decode("utf-8")) if c.get("url")]
         except Exception as e:
             log("[cats] TheCatAPI: %s" % e)
         try:
-            raw, _ = http_get("https://cataas.com/api/cats?limit=10&skip=%d" % random.randint(0, 1000))
-            cands += [("https://cataas.com/cat/%s" % c["id"], "cataas.com") for c in json.loads(raw.decode("utf-8"))
-                      if c.get("mimetype") in ("image/jpeg", "image/png") and not BLOCK_WORDS.search(" ".join(c.get("tags") or []))]
+            raw, _ = http_get("https://cataas.com/api/cats?limit=10&skip=%d" % random.randint(0, 2000))
+            self.queue += [("cs:" + c["id"], "https://cataas.com/cat/%s" % c["id"], "cataas.com")
+                           for c in json.loads(raw.decode("utf-8"))
+                           if c.get("mimetype") in ("image/jpeg", "image/png") and not BLOCK_WORDS.search(" ".join(c.get("tags") or []))]
         except Exception as e:
             log("[cats] cataas: %s" % e)
-        random.shuffle(cands)
-        out = []
-        for url, source in cands:
+        random.shuffle(self.queue)
+
+    def from_service(self):
+        for _ in range(12):
+            if not self.queue:
+                self.refill()
+                if not self.queue:
+                    return None
+            key, url, source = self.queue.pop()
+            if key in self.seen:
+                continue
             local = fetch_image(url)
+            self.mark(key)
             if local:
-                out.append({"id": local, "title": "", "sub": "", "source": source, "local": local, "heat": 0})
-            if len(out) >= 8:
-                break
-        if out or not self.fallback[1]:
-            self.fallback = (time.time(), out)
-        return self.fallback[1]
+                return {"key": key, "title": "", "sub": "", "source": source, "local": local}
+        return None
 
+    def from_reddit(self, cands):
+        fresh = [c for c in cands if "r:" + c["id"] not in self.seen]
+        for _ in range(5):
+            if not fresh:
+                return None
+            c = random.choice(fresh[:10])  # unter den heißesten ungesehenen zufällig – mehr Abwechslung
+            fresh.remove(c)
+            self.mark("r:" + c["id"])
+            local = fetch_image(c["img"])
+            if local:
+                return {"key": "r:" + c["id"], "title": c["title"], "sub": c["sub"], "local": local}
+        return None
 
-def interleave(a, b):
-    out = []
-    for i in range(max(len(a), len(b))):
-        out += a[i:i + 1] + b[i:i + 1]
-    return out
+    def next(self, cands, cats_only=False):
+        with self.lock:
+            self.count += 1
+            order = [self.from_service] if cats_only else (
+                [self.from_service, lambda: self.from_reddit(cands)] if self.count % 3 == 0
+                else [lambda: self.from_reddit(cands), self.from_service])
+            for get in order:
+                item = get()
+                if item:
+                    prune_images(keep=80)
+                    return item
+            return None
 
 
 def pick_diverse(items, n, per_sub):
@@ -1063,6 +1106,7 @@ class Display(object):
 
 SOURCES = []
 CONFIG = {}
+PICKER = None
 DISPLAY_CTL = Display({})
 VERSION = read_version()
 STARTED = time.time()
@@ -1085,12 +1129,27 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_POST(self):
+        if urllib.parse.urlparse(self.path).path == "/api/leave":
+            return self.leave()
+        self.send(404, b"not found", "text/plain")
+
+    def leave(self):
+        """'Zum Desktop': Browser beenden und erst nach 'Dashboard starten' oder dem nächsten Login wieder öffnen."""
+        import subprocess
+        with open(os.path.join(HOME_DIR, ".stopped"), "w") as f:
+            f.write("%d\n" % time.time())
+        self.send(200, b"ok", "text/plain")
+        threading.Timer(0.5, lambda: subprocess.call(["pkill", "-f", os.path.join(HOME_DIR, "browser-profile")])).start()
+        log("Zum Desktop gewechselt")
+
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
         if path == "/api/all":
             out = {"version": VERSION, "server_time": time.time(), "started": STARTED,
                    "night": CONFIG["night"], "night_now": is_night(CONFIG["night"]), "display": CONFIG["display"],
-                   "page": PAGE, "screen": DISPLAY_CTL.status, "sources": {}}
+                   "page": PAGE, "screen": DISPLAY_CTL.status, "kiosk": CONFIG["kiosk"],
+                   "update": update_status(), "sources": {}}
             for s in SOURCES:
                 snap = s.snapshot()
                 if isinstance(snap.get("data"), dict):
@@ -1099,6 +1158,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, json.dumps(out, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
         if path == "/healthz":
             return self.send(200, b"ok", "text/plain")
+        if path == "/api/next-image":
+            reddit = next((s for s in SOURCES if isinstance(s, Reddit)), None)
+            cands = ((reddit.snapshot().get("data") or {}).get("_candidates") or []) if reddit else []
+            item = PICKER.next(cands, cats_only=CONFIG["images"] != "reddit")
+            if not item:
+                return self.send(503, b"keine Bilder", "text/plain")
+            return self.send(200, json.dumps(item, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
         if path == "/api/alive":
             v = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("v", [""])[0]
             PAGE.update(version=v[:40], at=time.time())
@@ -1124,23 +1190,93 @@ class ThreadingServer(socketserver.ThreadingMixIn, HTTPServer):
     allow_reuse_address = True
 
 
+def write_if_changed(path, body, mode=0o755):
+    try:
+        with open(path, encoding="utf-8") as f:
+            if f.read() == body:
+                return False
+    except OSError:
+        pass
+    try:
+        d = os.path.dirname(path)
+        if not os.path.isdir(d):
+            os.makedirs(d)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(body)
+        os.chmod(path, mode)
+        return True
+    except OSError as e:
+        log("Datei %s nicht angelegt: %s" % (path, e))
+        return False
+
+
 def ensure_shortcuts():
-    """~/imac-dashboard/setup.sh und diagnose.sh anlegen (auch für ältere Installationen nach Auto-Update)."""
-    for name in ("setup.sh", "diagnose.sh"):
-        path = os.path.join(HOME_DIR, name)
-        body = '#!/bin/sh\nexec "%s" "$@"\n' % os.path.join(HOME_DIR, "app", name)
-        try:
-            with open(path) as f:
-                if f.read() == body:
-                    continue
-        except OSError:
-            pass
-        try:
-            with open(path, "w") as f:
-                f.write(body)
-            os.chmod(path, 0o755)
-        except OSError as e:
-            log("Verknüpfung %s nicht angelegt: %s" % (path, e))
+    """Kurzbefehle und Menü-/Desktop-Einträge anlegen – auch für ältere Installationen nach dem Auto-Update.
+    ~/imac-dashboard/{setup,diagnose,update,start}.sh; Menü: Dashboard starten/aktualisieren/Einstellungen/Diagnose."""
+    app = os.path.join(HOME_DIR, "app")
+    for name, target in (("setup.sh", "setup.sh"), ("diagnose.sh", "diagnose.sh"),
+                         ("update.sh", "update-now.sh"), ("start.sh", "start.sh")):
+        write_if_changed(os.path.join(HOME_DIR, name), '#!/bin/sh\nexec "%s" "$@"\n' % os.path.join(app, target))
+    entries = {
+        "start": ("Dashboard starten", "Flur-Dashboard wieder anzeigen", "video-display", "start.sh", "", "false"),
+        "update": ("Dashboard aktualisieren", "Nach einer neuen Version suchen", "system-software-update", "update.sh", " --pause", "true"),
+        "setup": ("Dashboard-Einstellungen", "Ort, Abfahrten, Müll, Darstellung ändern", "preferences-system", "setup.sh", "", "true"),
+        "diagnose": ("Dashboard-Diagnose", "Fehlerbericht zum Weiterschicken", "utilities-system-monitor", "diagnose.sh", " --pause", "true"),
+    }
+    if not sys.platform.startswith("linux"):
+        return  # Menü-/Desktop-Einträge nur auf dem Kiosk-Rechner, nicht beim Testen auf anderen Systemen
+    apps_dir = os.path.expanduser("~/.local/share/applications")
+    desktop_files = {}
+    for key, (name, comment, icon, script, args, term) in entries.items():
+        body = ("[Desktop Entry]\nType=Application\nName=%s\nComment=%s\nIcon=%s\nExec=\"%s\"%s\nTerminal=%s\n"
+                "Categories=Utility;\n" % (name, comment, icon, os.path.join(HOME_DIR, script), args, term))
+        path = os.path.join(apps_dir, "imac-dashboard-%s.desktop" % key)
+        write_if_changed(path, body)
+        desktop_files[key] = body
+    # Auf den Schreibtisch nur einmal legen (wer sie löscht, bekommt sie nicht ständig zurück)
+    marker = os.path.join(HOME_DIR, ".desktop-icons")
+    if os.environ.get("DISPLAY") and not os.path.exists(marker):
+        rc, out = Display({}).run("xdg-user-dir", "DESKTOP")
+        desk = out.strip() if rc == 0 else os.path.expanduser("~/Desktop")
+        if desk and os.path.isdir(desk) and os.path.realpath(desk) != os.path.realpath(os.path.expanduser("~")):
+            for key in ("start", "update"):
+                path = os.path.join(desk, "Dashboard-%s.desktop" % ("starten" if key == "start" else "aktualisieren"))
+                if write_if_changed(path, desktop_files[key]):
+                    # XFCE fragt sonst bei jedem Start "nicht vertrauenswürdiger Starter"
+                    digest = hashlib.sha256(desktop_files[key].encode("utf-8")).hexdigest()
+                    Display({}).run("gio", "set", "-t", "string", path, "metadata::xfce-exe-checksum", digest)
+            write_if_changed(marker, "1\n", 0o644)
+
+
+def maybe_restart_kiosk():
+    """Läuft noch ein kiosk.sh aus einer älteren Version, durch das neue ersetzen (kein Neuanmelden nötig).
+    Der Zustand "Zum Desktop" bleibt dabei erhalten (--keep-state)."""
+    import subprocess
+    kiosk = os.path.join(HOME_DIR, "app", "kiosk.sh")
+    if not os.environ.get("DISPLAY") or not os.path.exists(kiosk):
+        return
+    if subprocess.call(["pgrep", "-f", kiosk], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
+        return  # Kiosk läuft gar nicht (z. B. von Hand gestarteter Server)
+    with open(kiosk, "rb") as f:
+        want = hashlib.sha1(f.read()).hexdigest()
+    try:
+        with open(os.path.join(HOME_DIR, ".kiosk-hash")) as f:
+            running = f.read().strip()
+    except OSError:
+        running = ""
+    attempt = os.path.join(HOME_DIR, ".kiosk-restart-attempt")
+    try:
+        with open(attempt) as f:
+            if f.read().strip() == want:
+                return  # schon versucht, keine Schleife
+    except OSError:
+        pass
+    if running == want:
+        return
+    write_if_changed(attempt, want + "\n", 0o644)
+    log("kiosk.sh hat sich geändert – starte es neu")
+    subprocess.Popen([kiosk, "--keep-state"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     stdin=subprocess.DEVNULL, start_new_session=True, close_fds=True)
 
 
 def diagnose():
@@ -1236,12 +1372,18 @@ def main():
         if not os.path.isdir(d):
             os.makedirs(d)
     CONFIG = load_config()
+    global PICKER
+    PICKER = ImagePicker()
     for cls in (Weather, Trains, News, Waste, Reddit):
         SOURCES.append(cls(CONFIG))
     if "--diagnose" in sys.argv or "--once" in sys.argv:
         diagnose()
         return
     ensure_shortcuts()
+    try:
+        maybe_restart_kiosk()
+    except Exception as e:
+        log("kiosk-Neustart nicht möglich:", e)
     for s in SOURCES:
         threading.Thread(target=s.loop, name=s.name, daemon=True).start()
     DISPLAY_CTL.cfg = CONFIG

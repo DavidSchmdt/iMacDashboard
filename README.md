@@ -10,6 +10,15 @@ Keine Frameworks, kein Node, keine API-Schlüssel nötig.
 **Das Repo enthält keine Ortsangaben.** Ort, Bahnhof und Müllkalender stehen nur in
 `~/.config/imac-dashboard/config.json` auf dem Gerät selbst. Der Installer legt die Datei an.
 
+## Kurzanleitung für den Haushalt
+
+- **Zum Desktop:** Maus bewegen → Knopf „Zum Desktop“ oben rechts (oder Taste `Esc`). Das Dashboard bleibt dann zu.
+- **Zurück zum Dashboard:** Symbol „Dashboard starten“ auf dem Schreibtisch oder im Menü – oder einfach neu anmelden.
+- **Aktualisieren:** geht alle 30 Minuten von selbst; sofort: Symbol „Dashboard aktualisieren“ oder `~/imac-dashboard/update.sh`.
+- **Einstellungen** (Ort, Abfahrten, Müll, hell/dunkel, Nacht): Menü „Dashboard-Einstellungen“ oder `~/imac-dashboard/setup.sh`.
+- **Etwas geht nicht:** Menü „Dashboard-Diagnose“ oder `~/imac-dashboard/diagnose.sh`, Ausgabe an David schicken.
+- Version und letzte Update-Prüfung stehen klein unten rechts auf dem Dashboard.
+
 ## Installation
 
 Im Terminal (als normaler Benutzer, nicht root):
@@ -61,7 +70,8 @@ Nur Abweichungen eintragen; Standardwerte stehen in `server.py` (`DEFAULTS`).
 | `trains` | `station_name`, `opendata_id` (transport.opendata.ch) und/oder `iris_eva` (DB IRIS), `lines`, `groups`: `"auto"` (Standard: zwei Listen je Fahrtrichtung, aus der Lage des nächsten Halts berechnet), `"none"` (eine Liste) oder eigene Gruppen per Regex auf das Ziel; `rename` (Ziele kürzen) |
 | `waste` | `provider: "ics"` mit `ics_url`, oder `provider: "athos"` (Abfuhrtermine-Portal mit WasteManagementServlet) mit `portal_url`, `ort`, `strasse`, `hausnummer`, `containers`; `types` legt fest, welche Abfuhren gezeigt werden |
 | `night` | `from`, `to` (Standard 22:30–6:00), `mode`: `"off"` (Standard: Bildschirm nachts per DPMS aus; eine Mausbewegung weckt ihn für 5 Minuten) oder `"dim"` (nur abdunkeln); `dim` Stärke der Abdunkelung (0–0.9, Standard 0.35); `dim_before` Minuten vor `from`, in denen leicht abgedunkelt wird (Standard 20) |
-| `display` | `brightness`, `contrast` der ganzen Anzeige tagsüber (1.0 = normal, z. B. 1.15 für ein mattes Display) |
+| `kiosk` | `return_after_min`: nach „Zum Desktop“ so viele Minuten ohne Maus/Tastatur automatisch zurück ins Dashboard (Standard 0 = nie) |
+| `display` | `theme`: `"hell"` (Standard: heller, kontrastreicher Look für den Blick im Vorbeigehen) oder `"dunkel"`; `brightness`, `contrast` der ganzen Anzeige (1.0 = normal) |
 | `images` | `"reddit"` (Katzen-Memes, bei Mangel aufgefüllt mit TheCatAPI/cataas.com) oder `"cats"` (nur Katzenbild-Dienste) |
 | `reddit` | optional `client_id`/`client_secret` (App-Typ „script“): verlässlicher NSFW-/Spoiler-/Flair-Filter |
 
@@ -69,7 +79,7 @@ Nach einer Änderung den Server neu starten: `pkill -f imac-dashboard/app/server
 
 ## Wartung: keine
 
-- **Updates:** 5 Minuten nach dem Login und dann alle 6 Stunden wird `VERSION` im Repo geprüft. Bei einer neuen Version wird das Paket
+- **Updates:** 5 Minuten nach dem Login und dann alle 30 Minuten wird `VERSION` im Repo geprüft (eine winzige Datei). Bei einer neuen Version wird das Paket
   geladen, geprüft und ausgetauscht. Startet der neue Server nicht, oder meldet sich die neue Seite im Browser nicht innerhalb von
   3 Minuten (JavaScript-Fehler, CSS fehlt), geht es automatisch auf die alte Version zurück, und der Browser startet neu.
 - **Abstürze:** Server und Browser starten nach 5 Sekunden neu. Die Seite lädt sich alle 6 Stunden neu.
@@ -98,12 +108,12 @@ Optische Fehler bei sonst laufender Seite (z. B. verrutschtes Layout) erkennt de
 | Abfahrten | transport.opendata.ch (mit Prognosen), DB IRIS als Ersatz oder alleinige Quelle | 1 min |
 | Müll | iCal des Abfallkalenders (direkt oder über das Abfuhrtermine-Portal) | 12 h |
 | Nachrichten | tagesschau.de RSS, BBC World RSS | 10 min |
-| Katzenbild | Reddit-Katzen-Memes aus kuratierten SFW-Subreddits (1 Abruf alle 75 s im Wechsel); unter 6 Katzenbildern wird mit TheCatAPI / cataas.com aufgefüllt | 40 s Wechsel |
+| Katzenbild | Kuratierte SFW-Katzen-Subreddits (Memes und normale Katzen, 1 Abruf alle 75 s im Wechsel) und jedes dritte Bild von TheCatAPI / cataas.com; fällt Reddit aus, nur die Katzen-Dienste. Kein Bild wiederholt sich innerhalb von 3 Tagen | 5 min Wechsel |
 | Tipps | `web/tips.json`: kuratierte Ladebildschirm-Tipps (DE/EN), gemischt ohne Wiederholung | 20 s Wechsel |
 
-**Bild-Auswahl:** Pro Subreddit wird eine „Hitze“ berechnet, also wie schnell ein Beitrag im Verhältnis zu seinem Alter steigt.
+**Bild-Auswahl:** Der Server wählt das nächste Bild (`/api/next-image`) zufällig unter den zehn „heißesten“ noch nicht gezeigten und merkt sich gezeigte Bilder 3 Tage lang (`cache/seen-images.json`). Pro Subreddit wird eine „Hitze“ berechnet, also wie schnell ein Beitrag im Verhältnis zu seinem Alter steigt.
 Mit Punktzahl ist das Punkte / (Alter + 1,5 h)^1,4. Ohne Punktzahl dient die Position in „hot“ geteilt durch das Alter als Ersatz.
-Danach wird mit dem Median des Subreddits normiert. Höchstens 4 Bilder kommen aus demselben Sub.
+Danach wird mit dem Median des Subreddits normiert. Höchstens 10 Kandidaten kommen aus demselben Sub.
 Gefiltert werden over_18, Spoiler, angepinnte Beiträge und Titel/Flair mit NSFW- oder Politik-Stichwörtern.
 
 **Tipps:** Eine Zeile pro Tipp in `web/tips.json`. Keine Namen, keine Orte. Die Kachel zeigt „Tipp“/„Lädt“ bei deutschen und

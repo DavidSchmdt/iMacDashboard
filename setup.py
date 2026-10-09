@@ -232,7 +232,9 @@ def ask_groups(t):
 
 def ask_night(t, cur):
     n = dict({"from": "22:30", "to": "06:00", "mode": "off", "dim": 0.35, "dim_before": 20}, **(cur.get("night") or {}))
-    d = dict({"brightness": 1.0, "contrast": 1.0}, **(cur.get("display") or {}))
+    d = dict({"theme": "hell", "brightness": 1.0, "contrast": 1.0}, **(cur.get("display") or {}))
+    t.say("Darstellung tagsüber: hell (empfohlen, gut lesbar im Vorbeigehen) oder dunkel?")
+    d["theme"] = "dunkel" if t.ask("Darstellung", d["theme"]).lower().startswith("d") else "hell"
     t.say("Nacht: Bildschirm aus (spart Strom) oder nur dunkler?")
     t.say("  aus    = Bildschirm aus; Maus/Taste weckt ihn für 5 Minuten")
     t.say("  dunkel = Bildschirm bleibt an, Seite abgedunkelt")
@@ -317,7 +319,7 @@ def interactive(t):
     waste = ask_waste(t, loc)
     if waste:
         cfg["waste"] = waste
-    t.say("\n4/4 Nacht & Helligkeit")
+    t.say("\n4/4 Darstellung & Nacht")
     cfg["night"], cfg["display"] = ask_night(t, cfg)
     t.say("\nSpäter ändern: ~/imac-dashboard/setup.sh  ·  Fehlersuche: ~/imac-dashboard/diagnose.sh")
     return cfg
@@ -346,8 +348,9 @@ def summary(cfg):
             "  2) Abfahrten:        %s%s, %s" % (tr.get("station_name") or "–",
                                                 (" (" + " ".join(tr["lines"]) + ")") if tr.get("lines") else "", gtxt),
             "  3) Müllabfuhr:       %s" % ((w.get("strasse", "") + " " + str(w.get("hausnummer", ""))).strip() or w.get("provider") or "–"),
-            "  4) Nacht & Helligkeit: %s–%s, %s" % (n.get("from", "22:30"), n.get("to", "06:00"),
-                                                   "dunkel" if n.get("mode") == "dim" else "Bildschirm aus")]
+            "  4) Darstellung & Nacht: %s, nachts %s–%s %s" % (
+                (cfg.get("display") or {}).get("theme", "hell"), n.get("from", "22:30"), n.get("to", "06:00"),
+                "abgedunkelt" if n.get("mode") == "dim" else "Bildschirm aus")]
 
 
 def menu(t):

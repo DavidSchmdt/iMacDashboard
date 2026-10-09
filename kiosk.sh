@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Startet beim XFCE-Login: Server (mit Neustart-Schleife), Update-Prüfung und
 # den Browser im Kiosk-Modus. Läuft nur einmal pro Sitzung.
+#   kiosk.sh               Login/Start: Dashboard soll laufen
+#   kiosk.sh --keep-state  Neustart des Skripts (z. B. nach Update): "Zum Desktop" bleibt bestehen
 set -u
 APP="$(cd "$(dirname "$0")" && pwd)"
 DASH_HOME="${DASH_HOME:-$(dirname "$APP")}"
@@ -11,8 +13,22 @@ export DASH_HOME
 mkdir -p "$LOGS"
 [ -f "$DASH_HOME/kiosk.env" ] && . "$DASH_HOME/kiosk.env"   # z.B. DASH_BROWSER=firefox, DASH_BROWSER_FLAGS="--disable-gpu"
 
-exec 9>"$DASH_HOME/.kiosk.lock"
-if command -v flock >/dev/null && ! flock -n 9; then echo "läuft bereits"; exit 0; fi
+STOP="$DASH_HOME/.stopped"            # gesetzt = bewusst zum Desktop gewechselt, Browser nicht neu öffnen
+RESTART="$DASH_HOME/.restart-browser"  # gesetzt = Browser absichtlich beendet (Update), sofort neu öffnen
+
+# Ältere Instanz (z. B. aus der Version vor einem Update) ablösen – samt ihrer Warte-Schleifen
+for p in $(pgrep -f "$APP/kiosk.sh"); do [ "$p" != "$$" ] && kill "$p" 2>/dev/null; done
+pkill -f "sleep 21600" 2>/dev/null; pkill -f "sleep 1800" 2>/dev/null
+pkill -f "$DASH_HOME/browser-profile" 2>/dev/null
+pkill -f "$APP/server.py" 2>/dev/null
+sleep 2
+
+# Bewusst kein flock: Kindprozesse älterer Versionen erben die Sperre und hielten sie sonst fest.
+# Eine einzige Instanz ist gesichert, weil jede neue alle älteren oben beendet.
+[ "${1:-}" = "--keep-state" ] || rm -f "$STOP"
+rm -f "$RESTART"
+python3 -c "import hashlib,sys; print(hashlib.sha1(open(sys.argv[1],'rb').read()).hexdigest())" "$APP/kiosk.sh" > "$DASH_HOME/.kiosk-hash"
+export MOZ_CRASHREPORTER_DISABLE=1   # nach Absturz kein Dialog, einfach neu starten
 
 # Logs klein halten
 for f in "$LOGS"/*.log; do [ -f "$f" ] && [ "$(wc -c <"$f")" -gt 2000000 ] && tail -c 500000 "$f" >"$f.tmp" && mv "$f.tmp" "$f"; done
@@ -27,11 +43,11 @@ pkill -f "$APP/server.py" 2>/dev/null
     sleep 5
   done ) &
 
-# Updates: 5 min nach Login, dann alle 6 h
+# Updates: 5 min nach Login, dann alle 30 min (nur die kleine VERSION-Datei; das Paket nur bei neuer Version)
 ( sleep 300
   while true; do
     "$DASH_HOME/app/update.sh" >>"$LOGS/update.log" 2>&1
-    sleep 21600
+    sleep 1800
   done ) &
 
 # Nachts Bildschirm aus und kein Abdunkeln durch die Energieverwaltung: macht der Server (Display),
@@ -89,8 +105,26 @@ EOF
   esac
 }
 
-# Browser zu? Nach 5 s wieder öffnen.
+# Optional zurück zum Dashboard nach X Minuten am Desktop (kiosk.return_after_min, 0 = nie)
+return_after_min() {
+  python3 -c "import json,urllib.request as u; print(int(json.load(u.urlopen('${URL}api/all', timeout=5)).get('kiosk', {}).get('return_after_min') or 0))" 2>/dev/null || echo 0
+}
+idle_seconds() {  # Leerlauf von Maus/Tastatur, sonst Zeit seit dem Verlassen
+  if command -v xprintidle >/dev/null; then echo $(( $(xprintidle) / 1000 )); else echo $(( $(date +%s) - $(stat -c %Y "$STOP" 2>/dev/null || date +%s) )); fi
+}
+
 while true; do
+  if [ -f "$STOP" ]; then
+    sleep 10
+    mins="$(return_after_min)"
+    if [ "$mins" -gt 0 ] && [ "$(idle_seconds)" -ge $(( mins * 60 )) ]; then rm -f "$STOP"; fi
+    continue
+  fi
   run_browser >>"$LOGS/browser.log" 2>&1
-  sleep 5
+  rc=$?
+  if [ -f "$RESTART" ]; then rm -f "$RESTART"; sleep 2; continue; fi   # Update/Rollback: gleich wieder öffnen
+  [ -f "$STOP" ] && continue                                           # "Zum Desktop"-Knopf oder Esc
+  if [ "$rc" -eq 0 ]; then date +%s > "$STOP"; continue; fi             # bewusst geschlossen (Strg+Q, Fenster zu)
+  echo "$(date '+%F %T') Browser beendet mit Code $rc – Neustart" >>"$LOGS/browser.log"
+  sleep 5                                                              # Absturz: neu öffnen
 done

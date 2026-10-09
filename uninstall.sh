@@ -4,7 +4,9 @@ set -u
 DASH_HOME="${DASH_HOME:-$HOME/imac-dashboard}"
 pkill -f "$DASH_HOME/app/kiosk.sh" 2>/dev/null
 pkill -f "$DASH_HOME/app/server.py" 2>/dev/null
-rm -f "$HOME/.config/autostart/imac-dashboard.desktop"
+rm -f "$HOME/.config/autostart/imac-dashboard.desktop" "$HOME"/.local/share/applications/imac-dashboard-*.desktop
+DESK="$(xdg-user-dir DESKTOP 2>/dev/null || echo "$HOME/Desktop")"
+rm -f "$DESK/Dashboard-starten.desktop" "$DESK/Dashboard-aktualisieren.desktop"
 for f in light-locker xfce4-screensaver xscreensaver; do
   grep -qx 'Hidden=true' "$HOME/.config/autostart/$f.desktop" 2>/dev/null && rm -f "$HOME/.config/autostart/$f.desktop"
 done

@@ -8,10 +8,10 @@
   var POLL_TICKS = 6;    // alle 60 s Daten vom lokalen Server
   var NEWS_TICKS = 2;    // 20 s
   var TIP_TICKS = 3;     // 30 s
-  var PHOTO_TICKS = 4;   // 40 s
+  var PHOTO_TICKS = 30;  // 5 min
   var STALE_AFTER = { weather: 3600, trains: 300, news: 3600, waste: 3 * 86400, reddit: 3 * 3600 };
 
-  var state = { snap: null, version: null, newsPage: 0, photoIdx: -1, photoFront: "a", lastOk: 0 };
+  var state = { snap: null, version: null, newsPage: 0, lastOk: 0 };
   var $ = function (id) { return document.getElementById(id); };
   var WD = ["Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"];
   var WD_SHORT = ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"];
@@ -52,8 +52,10 @@
     if (d.getMinutes() === lastMinute) return false;
     lastMinute = d.getMinutes();
     $("time").innerHTML = pad(d.getHours()) + '<span class="sep">:</span>' + pad(d.getMinutes());
-    $("date").innerHTML = WD[d.getDay()] + ", " + d.getDate() + ". " + MON[d.getMonth()] +
+    var date = $("date");
+    date.innerHTML = WD[d.getDay()] + ", " + d.getDate() + ". " + MON[d.getMonth()] +
       '<span class="kw">KW ' + isoWeek(d) + "</span>";
+    fitLayout();
     return true;
   }
 
@@ -88,7 +90,8 @@
   function data(name) { var s = src(name); return s && s.data; }
 
   /* ---------------- Wetter-Icons (inline SVG) ---------------- */
-  var C = { sun: "#ffb547", cloud: "#bdb7ad", dark: "#847e75", rain: "#7fb3e6", snow: "#efebe4", bolt: "#ffb547", moon: "#e8dcc0" };
+  // Icon-Farben kommen aus dem aktiven Thema (CSS-Variablen --wx-*), siehe applyTheme()
+  var C = { sun: "#f09400", cloud: "#a3a9b0", dark: "#5d646c", rain: "#1e73c8", snow: "#6f9fd2", bolt: "#f09400", moon: "#b8963a" };
   function sun(cx, cy, r) {
     var rays = "";
     for (var i = 0; i < 8; i++) {
@@ -231,16 +234,32 @@
   }
 
   /* ---------------- Müll ---------------- */
-  var BIN_ICONS = {
-    gelb: '<svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#f4cf45" d="M15 8 q9 6 18 0 l-2 6 q6 4 7 14 q1 14-14 14 q-15 0-14-14 q1-10 7-14z"/><path d="M19 14 q5 2 10 0" stroke="#16191c" stroke-width="2" fill="none" opacity=".5"/></svg>',
-  };
+  var BIN_ICONS = {};
   function binIcon(lid, body) {
     return '<svg viewBox="0 0 48 48" aria-hidden="true"><rect x="10" y="8" width="28" height="5" rx="1.5" fill="' + lid + '"/><path fill="' + body +
       '" d="M12 15 h24 l-2.5 25 h-19z"/><circle cx="16" cy="42" r="2.6" fill="' + lid + '"/><circle cx="32" cy="42" r="2.6" fill="' + lid + '"/></svg>';
   }
-  BIN_ICONS.rest = binIcon("#8e959c", "#5d6369");
-  BIN_ICONS.bio = binIcon("#9a7a55", "#6b5236");
-  BIN_ICONS.papier = binIcon("#7fa2c9", "#46627f");
+  function buildIcons() {
+    var cs = getComputedStyle(document.body), v = function (n) { return cs.getPropertyValue(n).trim(); };
+    C = { sun: v("--wx-sun"), cloud: v("--wx-cloud"), dark: v("--wx-dark"), rain: v("--wx-rain"),
+          snow: v("--wx-snow"), bolt: v("--wx-bolt"), moon: v("--wx-moon") };
+    BIN_ICONS.gelb = '<svg viewBox="0 0 48 48" aria-hidden="true"><path fill="' + v("--sack") + '" stroke="' + v("--sack-line") +
+      '" stroke-width="1.5" d="M15 8 q9 6 18 0 l-2 6 q6 4 7 14 q1 14-14 14 q-15 0-14-14 q1-10 7-14z"/>' +
+      '<path d="M19 14 q5 2 10 0" stroke="' + v("--sack-line") + '" stroke-width="2" fill="none"/></svg>';
+    BIN_ICONS.rest = binIcon(v("--bin-lid"), v("--bin-body"));
+    BIN_ICONS.bio = binIcon(v("--bio-lid"), v("--bio-body"));
+    BIN_ICONS.papier = binIcon(v("--pap-lid"), v("--pap-body"));
+  }
+  // Thema aus der Konfiguration (display.theme: "hell" Standard, "dunkel" optional)
+  var currentTheme = null;
+  function applyTheme() {
+    var t = state.snap && state.snap.display && state.snap.display.theme === "dunkel" ? "dunkel" : "hell";
+    if (t === currentTheme) return false;
+    currentTheme = t;
+    document.body.classList.toggle("theme-dark", t === "dunkel");
+    buildIcons();
+    return true;
+  }
 
   function renderWaste() {
     if (!state.snap || notConfigured("waste", "waste")) return;
@@ -281,29 +300,23 @@
   /* ---------------- Nachrichten ---------------- */
   // Beide Feeds bleiben sichtbar; jeder zeigt so viele Schlagzeilen wie passen
   // und blättert beim nächsten Wechsel dort weiter, wo er aufgehört hat.
-  var newsPos = {};
+  var newsStart = 0, newsShown = 0;
   function renderNews(advance) {
     var s = src("news"), n = data("news");
     stamp("news", s, "news");
     var body = document.querySelector("#news .body");
-    if (!n || !n.feeds.length) { body.innerHTML = '<div class="empty">Keine Nachrichten.</div>'; return; }
-    n.feeds.forEach(function (f) {
-      var p = newsPos[f.name] || (newsPos[f.name] = { start: 0, shown: 0 });
-      if (advance) { p.start += p.shown; if (p.start >= f.items.length) p.start = 0; }
-    });
-    var html = n.feeds.map(function (f) {
-      var items = f.items.slice(newsPos[f.name].start, newsPos[f.name].start + 6);
-      return '<div class="feed" data-name="' + esc(f.name) + '"><h3><span class="lang">' + esc(f.lang.toUpperCase()) + "</span>" + esc(f.name) +
-        (f.ok === false ? " · alter Stand" : "") + "</h3>" +
-        items.map(function (i) {
-          return '<div class="headline"><div class="hl">' + esc(i.title) + (i.ts ? '<span class="ago">' + ago(i.ts) + "</span>" : "") + "</div></div>";
-        }).join("") + "</div>";
+    if (!n || !n.feeds.length) { body.innerHTML = problem(s, "Nachrichten werden geladen …"); return; }
+    // Eine gemeinsame Liste, Sprachen abwechselnd (DE, EN, DE, …): nutzt den Platz besser als zwei feste Hälften
+    var mixed = [];
+    for (var i = 0; i < 12; i++) {
+      n.feeds.forEach(function (f) { if (f.items[i]) mixed.push({ f: f, it: f.items[i] }); });
+    }
+    if (advance) { newsStart += newsShown; if (newsStart >= mixed.length) newsStart = 0; }
+    var html = mixed.slice(newsStart, newsStart + 8).map(function (m) {
+      return '<div class="headline"><span class="lang" title="' + esc(m.f.name) + '">' + esc(m.f.lang.toUpperCase()) + "</span>" +
+        '<div class="hl">' + esc(m.it.title) + (m.it.ts ? '<span class="ago">' + ago(m.it.ts) + "</span>" : "") + "</div></div>";
     }).join("");
-    swap(body, html, advance, function () {
-      Array.prototype.forEach.call(body.querySelectorAll(".feed"), function (el) {
-        newsPos[el.getAttribute("data-name")].shown = Math.max(1, trimToFit(el, ".headline"));
-      });
-    });
+    swap(body, html, advance, function () { newsShown = Math.max(1, trimToFit(body, ".headline")); });
   }
 
   // Entfernt so lange das letzte Element, bis der Container nicht mehr überläuft.
@@ -373,31 +386,37 @@
   }
 
   /* ---------------- Bild ---------------- */
+  // Das nächste Bild wählt der Server (gemischt, keine Wiederholung innerhalb von 3 Tagen)
+  var photoShown = false, photoLoading = false;
   function renderPhoto(advance) {
-    var r = data("reddit");
-    var list = ((r && r.images) || []).filter(function (i) { return i.local; });
     var tile = $("photo");
-    var empty = tile.querySelector(".empty");
-    if (!list.length) {
-      if (!empty) { empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "Noch keine Katzen geladen …"; tile.appendChild(empty); }
-      return;
-    }
-    if (empty) empty.remove();
-    if (!advance && state.photoIdx >= 0) return;
-    state.photoIdx = (state.photoIdx + 1) % list.length;
-    var item = list[state.photoIdx];
-    // Erst fertig dekodieren, dann in einem Schritt austauschen (kein Ruckeln, kein halbes Bild)
-    var img = new Image();
-    img.alt = "";
-    img.src = "/img/" + item.local;
-    var ready = img.decode ? img.decode() : new Promise(function (ok, bad) { img.onload = ok; img.onerror = bad; });
-    ready.then(function () {
-      var frame = tile.querySelector(".frame");
-      frame.innerHTML = "";
-      frame.appendChild(img);
-      tile.querySelector(".caption .title").textContent = item.title || "";
-      tile.querySelector(".caption .sub").textContent = item.source || (item.sub ? "r/" + item.sub : "");
-    }).catch(function () { /* kaputtes Bild: beim nächsten Bild-Takt das nächste */ });
+    if ((!advance && photoShown) || photoLoading) return;
+    photoLoading = true;
+    fetch("/api/next-image", { cache: "no-store" })
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function (item) {
+        // Erst fertig dekodieren, dann in einem Schritt austauschen (kein Ruckeln, kein halbes Bild)
+        var img = new Image();
+        img.alt = "";
+        img.src = "/img/" + item.local;
+        var ready = img.decode ? img.decode() : new Promise(function (ok, bad) { img.onload = ok; img.onerror = bad; });
+        return ready.then(function () {
+          var frame = tile.querySelector(".frame");
+          frame.innerHTML = "";
+          frame.appendChild(img);
+          tile.querySelector(".caption .title").textContent = item.title || "";
+          tile.querySelector(".caption .sub").textContent = item.source || (item.sub ? "r/" + item.sub : "");
+          var empty = tile.querySelector(".empty");
+          if (empty) empty.remove();
+          photoShown = true;
+        });
+      })
+      .catch(function () {
+        if (!photoShown && !tile.querySelector(".empty")) {
+          var e = document.createElement("div"); e.className = "empty"; e.textContent = "Noch keine Katzen geladen …"; tile.appendChild(e);
+        }
+      })
+      .then(function () { photoLoading = false; });
   }
 
   /* ---------------- Nacht ---------------- */
@@ -430,13 +449,43 @@
   }
   function screenOff() { return applyNight(); }
 
-  ["mousemove", "mousedown", "keydown", "touchstart"].forEach(function (ev) {
-    window.addEventListener(ev, function () {
-      if (!document.body.classList.contains("dark")) return;
+  // Maus/Taste: Zeiger und "Zum Desktop" zeigen, nach 5 s Ruhe wieder ausblenden; nachts aufwecken
+  var idleTimer = null;
+  function activity() {
+    document.body.classList.remove("idle");
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(function () { document.body.classList.add("idle"); }, 5000);
+    if (document.body.classList.contains("dark")) {
       awakeUntil = Date.now() + 5 * 60 * 1000;
       tick();
-    }, { passive: true });
+    }
+  }
+  ["mousemove", "mousedown", "keydown", "touchstart", "wheel"].forEach(function (ev) {
+    window.addEventListener(ev, activity, { passive: true });
   });
+  idleTimer = setTimeout(function () { document.body.classList.add("idle"); }, 5000);
+
+  // Zum Desktop: Browser schließen; er öffnet sich erst wieder über "Dashboard starten" oder beim nächsten Login
+  var leaving = false;
+  function leave() {
+    if (leaving) return;
+    leaving = true;
+    $("leave").textContent = "Dashboard wird geschlossen …";
+    fetch("/api/leave", { method: "POST" }).catch(function () { leaving = false; });
+  }
+  $("leave").addEventListener("click", leave);
+  window.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" || ((e.ctrlKey || e.metaKey) && (e.key === "q" || e.key === "Q"))) { e.preventDefault(); leave(); }
+  });
+
+  function drawVersion() {
+    var u = state.snap && state.snap.update, txt = state.snap ? "Version " + state.snap.version : "";
+    if (u && u.at) {
+      var d = new Date(u.at * 1000);
+      txt += " · Update geprüft " + d.getDate() + "." + (d.getMonth() + 1) + ". " + hm(d) + (u.result && u.result !== "aktuell" ? " (" + u.result + ")" : "");
+    }
+    if ($("version").textContent !== txt) $("version").textContent = txt;
+  }
 
   /* ---------------- Daten holen ---------------- */
   function poll() {
@@ -473,13 +522,37 @@
   }
 
   function renderAll(first) {
+    applyTheme();
     applyNight();
+    drawVersion();
     renderTrains();
     renderWaste();
     renderWeather();
     renderNews(false);
-    renderPhoto(first || state.photoIdx < 0);
+    renderPhoto(first || !photoShown);
   }
+
+  // Passt alles? Lange Daten: Kalenderwoche weglassen; Nachrichten: überstehende Zeile entfernen
+  // (z. B. wenn die Kachel darüber nach dem ersten Zeichnen höher geworden ist)
+  function fitLayout() {
+    var date = $("date"), kw = date.querySelector(".kw"), r = document.createRange();
+    r.selectNodeContents(date);
+    if (kw && r.getBoundingClientRect().width > date.clientWidth + 1) kw.remove();
+    var nb = document.querySelector("#news .body");
+    if (nb.scrollHeight > nb.clientHeight + 1) newsShown = Math.max(1, trimToFit(nb, ".headline"));
+  }
+
+  // Fenstergröße geändert (Kiosk-Browser startet oft erst im Fenster): alles einmal neu einpassen
+  var resizeTimer = null;
+  window.addEventListener("resize", function () {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () {
+      lastMinute = -1;
+      drawClock();
+      if (state.snap) renderNews(false);
+      fitLayout();
+    }, 300);
+  });
 
   /* ---------------- Der eine Takt ---------------- */
   var wasOff = false;
@@ -495,11 +568,13 @@
     if (n % NEWS_TICKS === 0) renderNews(true);
     if (n % TIP_TICKS === 0) nextTip(); else { tipStep++; drawLoading(); }
     if (n % PHOTO_TICKS === 0) renderPhoto(true);
+    fitLayout();
   }
   function schedule() {  // an der nächsten vollen 10 s ausrichten, damit die Minute pünktlich umspringt
     setTimeout(function () { tick(); schedule(); }, TICK_MS - (Date.now() % TICK_MS) + 20);
   }
 
+  buildIcons();
   drawClock();
   poll();
   loadTips();
