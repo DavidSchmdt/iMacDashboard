@@ -89,6 +89,9 @@ DEFAULTS = {
     "night": {"from": "22:30", "to": "06:00", "mode": "off", "dim": 0.35, "dim_before": 20},
     # Tagesbild: helles oder dunkles Thema; Helligkeit/Kontrast der ganzen Seite (1.0 = unverändert)
     "display": {"theme": "hell", "brightness": 1.0, "contrast": 1.0},  # theme: "hell" oder "dunkel"
+    # Stromanzeige (geschätzt). null = Werte nach Bildschirmgröße; zum Abgleich mit einem Strommessgerät hier eintragen:
+    # base_w = Grundlast ohne Bildschirm und CPU-Last, screen_w = Bildschirm bei voller Helligkeit, cpu_w = CPU-Last bei 100 %
+    "power": {"show": True, "base_w": None, "screen_w": None, "cpu_w": None},
     "update_check_hours": 6,
 }
 
@@ -1102,12 +1105,140 @@ class Display(object):
 
 
 # --------------------------------------------------------------------------
+# Stromverbrauch, geschätzt: Ein iMac unter Linux hat keinen Messfühler für die Steckdose.
+# Grundlast + CPU (per Intel RAPL gemessen, sonst aus der Auslastung) + Bildschirm nach Helligkeit.
+
+
+def read_num(path):
+    try:
+        with open(path) as f:
+            return float(f.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+class Power(object):
+    every = 10
+
+    def __init__(self, cfg, screen):
+        self.cfg = cfg
+        self.screen = screen  # Display-Status: nachts ist der Bildschirm aus
+        self.path = os.path.join(CACHE_DIR, "power.json")
+        self.status = {"watts": None, "today_kwh": None, "how": None}
+        self.day, self.wh = None, 0.0
+        try:
+            with open(self.path) as f:
+                d = json.load(f)
+            self.day, self.wh = d["day"], float(d["wh"])
+        except Exception:
+            pass
+
+    @staticmethod
+    def panel_width():
+        """Breite des größten angeschlossenen Bildschirms (2560 = 27-Zoll-iMac), 0 wenn unbekannt."""
+        best = 0
+        try:
+            for c in os.listdir("/sys/class/drm"):
+                base = os.path.join("/sys/class/drm", c)
+                try:
+                    with open(os.path.join(base, "status")) as f:
+                        if f.read().strip() != "connected":
+                            continue
+                    with open(os.path.join(base, "modes")) as f:
+                        best = max(best, int(f.readline().split("x")[0]))
+                except (OSError, ValueError):
+                    pass
+        except OSError:
+            pass
+        return best
+
+    @staticmethod
+    def backlight():
+        """Helligkeit 0..1 der eingebauten Hintergrundbeleuchtung, None wenn unbekannt."""
+        try:
+            names = sorted(os.listdir("/sys/class/backlight"))
+        except OSError:
+            return None
+        for d in names:
+            base = "/sys/class/backlight/" + d + "/"
+            cur = read_num(base + "actual_brightness")
+            if cur is None:
+                cur = read_num(base + "brightness")
+            top = read_num(base + "max_brightness")
+            if cur is not None and top:
+                return max(0.0, min(1.0, cur / top))
+        return None
+
+    @staticmethod
+    def cpu_times():
+        try:
+            with open("/proc/stat") as f:
+                v = [int(x) for x in f.readline().split()[1:]]
+            return v[3] + v[4], sum(v)  # Leerlauf (idle + iowait), gesamt
+        except (OSError, ValueError, IndexError):
+            return None
+
+    @staticmethod
+    def rapl():
+        base = "/sys/class/powercap/intel-rapl:0/"
+        return read_num(base + "energy_uj"), read_num(base + "max_energy_range_uj")
+
+    def save(self):
+        tmp = self.path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"day": self.day, "wh": round(self.wh, 3)}, f)
+        os.replace(tmp, self.path)
+
+    def loop(self):
+        c = self.cfg.get("power") or {}
+        big = self.panel_width() >= 2560
+        base_w = c.get("base_w") if c.get("base_w") is not None else (35 if big else 25)
+        screen_w = c.get("screen_w") if c.get("screen_w") is not None else (55 if big else 30)
+        cpu_w = c.get("cpu_w") if c.get("cpu_w") is not None else (65 if big else 45)
+        last_t, last_cpu, last_e = time.time(), self.cpu_times(), self.rapl()
+        n = 0
+        while True:
+            time.sleep(self.every)
+            try:
+                now, cpu, e = time.time(), self.cpu_times(), self.rapl()
+                dt = now - last_t
+                cpu_load, how = None, "Schätzung"
+                if e[0] is not None and last_e[0] is not None and dt > 0:
+                    de = e[0] - last_e[0]
+                    if de < 0 and e[1]:
+                        de += e[1]  # Zähler übergelaufen
+                    if de >= 0:
+                        cpu_load = de / 1e6 / dt * 1.15  # gemessene CPU-Leistung plus Netzteil-Verluste
+                        how = "Schätzung, CPU gemessen"
+                if cpu_load is None and cpu and last_cpu and cpu[1] > last_cpu[1]:
+                    busy = 1 - (cpu[0] - last_cpu[0]) / float(cpu[1] - last_cpu[1])
+                    cpu_load = cpu_w * max(0.0, min(1.0, busy))
+                st = self.screen.status
+                screen_on = not (st.get("last") == "aus" and not st.get("error"))  # xset fehlgeschlagen = Bildschirm an
+                bl = self.backlight()
+                watts = base_w + (cpu_load or 0) + (screen_w * (1.0 if bl is None else bl) if screen_on else 0)
+                day = time.strftime("%Y-%m-%d")
+                if day != self.day:
+                    self.day, self.wh = day, 0.0
+                self.wh += watts * min(dt, 3 * self.every) / 3600.0  # nach Ruhezustand keine Lücke hochrechnen
+                self.status = {"watts": round(watts, 1), "today_kwh": round(self.wh / 1000.0, 3), "how": how}
+                last_t, last_cpu, last_e = now, cpu, e
+                n += 1
+                if n % 6 == 0:
+                    self.save()
+            except Exception as ex:
+                self.status = dict(self.status, error=str(ex)[:200])
+                last_t = time.time()
+
+
+# --------------------------------------------------------------------------
 # HTTP server
 
 SOURCES = []
 CONFIG = {}
 PICKER = None
 DISPLAY_CTL = Display({})
+POWER = None
 VERSION = read_version()
 STARTED = time.time()
 PAGE = {"version": None, "at": 0}  # Lebenszeichen der Seite im Browser (für update.sh)
@@ -1149,7 +1280,8 @@ class Handler(BaseHTTPRequestHandler):
             out = {"version": VERSION, "server_time": time.time(), "started": STARTED,
                    "night": CONFIG["night"], "night_now": is_night(CONFIG["night"]), "display": CONFIG["display"],
                    "page": PAGE, "screen": DISPLAY_CTL.status, "kiosk": CONFIG["kiosk"],
-                   "update": update_status(), "sources": {}}
+                   "update": update_status(), "sources": {},
+                   "power": POWER.status if POWER and CONFIG["power"].get("show") else None}
             for s in SOURCES:
                 snap = s.snapshot()
                 if isinstance(snap.get("data"), dict):
@@ -1317,6 +1449,9 @@ def diagnose():
         pg = snap.get("page") or {}
         p("  Seite im Browser: %s" % ("meldet sich (vor %ds)" % (time.time() - pg["at"]) if pg.get("at") else "keine Meldung"))
         p("  Bildschirm-Steuerung: %s" % json.dumps(snap.get("screen"), ensure_ascii=False))
+        p("  Strom: %s" % json.dumps(snap.get("power"), ensure_ascii=False))
+        p("  Strom-Quellen: CPU-Messung (RAPL) %s · Bildschirmbreite %s · Helligkeit %s" % (
+            "ja" if Power.rapl()[0] is not None else "nein", Power.panel_width() or "?", Power.backlight()))
     except Exception as e:
         p("  nicht erreichbar: %s" % e)
     p("")
@@ -1388,6 +1523,9 @@ def main():
         threading.Thread(target=s.loop, name=s.name, daemon=True).start()
     DISPLAY_CTL.cfg = CONFIG
     threading.Thread(target=DISPLAY_CTL.loop, name="display", daemon=True).start()
+    global POWER
+    POWER = Power(CONFIG, DISPLAY_CTL)
+    threading.Thread(target=POWER.loop, name="power", daemon=True).start()
     port = int(os.environ.get("DASH_PORT", CONFIG["port"]))
     httpd = ThreadingServer(("127.0.0.1", port), Handler)
     log("Flur-Dashboard %s auf http://127.0.0.1:%d" % (VERSION, port))

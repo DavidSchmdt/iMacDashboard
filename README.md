@@ -72,6 +72,7 @@ Nur Abweichungen eintragen; Standardwerte stehen in `server.py` (`DEFAULTS`).
 | `night` | `from`, `to` (Standard 22:30–6:00), `mode`: `"off"` (Standard: Bildschirm nachts per DPMS aus; eine Mausbewegung weckt ihn für 5 Minuten) oder `"dim"` (nur abdunkeln); `dim` Stärke der Abdunkelung (0–0.9, Standard 0.35); `dim_before` Minuten vor `from`, in denen leicht abgedunkelt wird (Standard 20) |
 | `kiosk` | `return_after_min`: nach „Zum Desktop“ so viele Minuten ohne Maus/Tastatur automatisch zurück ins Dashboard (Standard 0 = nie) |
 | `display` | `theme`: `"hell"` (Standard: heller, kontrastreicher Look für den Blick im Vorbeigehen) oder `"dunkel"`; `brightness`, `contrast` der ganzen Anzeige (1.0 = normal) |
+| `power` | Stromanzeige unten links: `show` (Standard `true`); `base_w`, `screen_w`, `cpu_w` in Watt für Grundlast, Bildschirm bei voller Helligkeit und CPU bei voller Last (Standard nach Bildschirmgröße: 21,5″ 25/30/45, 27″ 35/55/65). Mit einem Strommessgerät an der Steckdose abgleichen |
 | `images` | `"reddit"` (Katzen-Memes, bei Mangel aufgefüllt mit TheCatAPI/cataas.com) oder `"cats"` (nur Katzenbild-Dienste) |
 | `reddit` | optional `client_id`/`client_secret` (App-Typ „script“): verlässlicher NSFW-/Spoiler-/Flair-Filter |
 
@@ -109,6 +110,7 @@ Optische Fehler bei sonst laufender Seite (z. B. verrutschtes Layout) erkennt de
 | Müll | iCal des Abfallkalenders (direkt oder über das Abfuhrtermine-Portal) | 12 h |
 | Nachrichten | tagesschau.de RSS, BBC World RSS | 10 min |
 | Katzenbild | Kuratierte SFW-Katzen-Subreddits (Memes und normale Katzen, 1 Abruf alle 75 s im Wechsel) und jedes dritte Bild von TheCatAPI / cataas.com; fällt Reddit aus, nur die Katzen-Dienste. Kein Bild wiederholt sich innerhalb von 3 Tagen | 5 min Wechsel |
+| Strom | Geschätzt, denn der iMac misst seinen Verbrauch an der Steckdose nicht: Grundlast + CPU (per Intel RAPL gemessen, wenn lesbar, sonst aus der Auslastung) + Bildschirm nach Helligkeit, nachts ohne Bildschirm. „Heute“ zählt ab Mitternacht, solange der Server läuft (`cache/power.json`) | 10 s, Anzeige 1 min |
 | Tipps | `web/tips.json`: kuratierte Ladebildschirm-Tipps (DE/EN), gemischt ohne Wiederholung | 20 s Wechsel |
 
 **Bild-Auswahl:** Der Server wählt das nächste Bild (`/api/next-image`) zufällig unter den zehn „heißesten“ noch nicht gezeigten und merkt sich gezeigte Bilder 3 Tage lang (`cache/seen-images.json`). Pro Subreddit wird eine „Hitze“ berechnet, also wie schnell ein Beitrag im Verhältnis zu seinem Alter steigt.

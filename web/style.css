@@ -231,6 +231,8 @@ body {
 .leave:hover { background: var(--accent); color: #fff; }
 .leave:hover .key { color: #fff; box-shadow: inset 0 0 0 1.5px #fff; }
 body.idle .leave { display: none; }
+/* Stromverbrauch (geschätzt), klein in der linken Ecke */
+.power { position: fixed; left: calc(var(--u) * 2); bottom: calc(var(--u) * 0.15); font-size: 0.5rem; color: var(--ink-4); }
 /* Version und letzte Update-Prüfung, klein in der Ecke */
 .version { position: fixed; right: calc(var(--u) * 2); bottom: calc(var(--u) * 0.15); font-size: 0.5rem; color: var(--ink-4); }
 .night-veil { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: #000; opacity: 0; pointer-events: none; }

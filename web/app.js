@@ -487,6 +487,16 @@
     if ($("version").textContent !== txt) $("version").textContent = txt;
   }
 
+  // Geschätzter Stromverbrauch vom Server (Grundlast + CPU + Bildschirm), leer wenn abgeschaltet
+  function drawPower() {
+    var p = state.snap && state.snap.power, txt = "";
+    if (p && p.watts != null) {
+      txt = "Strom ca. " + Math.round(p.watts) + " W";
+      if (p.today_kwh != null) txt += " · heute " + p.today_kwh.toFixed(2).replace(".", ",") + " kWh";
+    }
+    if ($("power").textContent !== txt) $("power").textContent = txt;
+  }
+
   /* ---------------- Daten holen ---------------- */
   function poll() {
     var ctl = typeof AbortController !== "undefined" ? new AbortController() : null;
@@ -525,6 +535,7 @@
     applyTheme();
     applyNight();
     drawVersion();
+    drawPower();
     renderTrains();
     renderWaste();
     renderWeather();
